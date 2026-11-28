@@ -1,19 +1,24 @@
 #ifndef FLASH_GPGPU_SIM_SASS_FRONTEND_H_
 #define FLASH_GPGPU_SIM_SASS_FRONTEND_H_
 
+#include "../tcgen05/timing_metadata.h"
 #include <array>
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "../cta_reduction.h"
 #include "decode/decoder.h"
 
 namespace flash_gpgpu_sim {
 namespace sass {
+
+struct functional_tcgen_state;
 
 constexpr unsigned kWarpLanes = 32;
 constexpr unsigned kVectorRegisters = 256;
@@ -154,6 +159,7 @@ public:
 struct functional_tensor_map_2d {
   uint64_t global_address = 0;
   uint32_t element_bytes = 0;
+  uint32_t data_type = UINT32_MAX; // explicit common tensor-map tag, if known
   // Equal-width formats can still require different reduction arithmetic.
   tensor_map_element_type element_type = tensor_map_element_type::kUnknown;
   std::array<uint32_t, 2> global_dim{};
@@ -161,6 +167,7 @@ struct functional_tensor_map_2d {
   uint64_t row_stride_bytes = 0;
   std::array<uint32_t, 2> element_stride{{1, 1}};
   uint32_t swizzle_bytes = 0;
+  uint32_t swizzle_mode = UINT32_MAX;
   bool oob_zero = true;
 };
 
@@ -171,12 +178,14 @@ struct functional_tensor_map_view {
   unsigned rank = 0;
   uint64_t global_address = 0;
   uint32_t element_bytes = 0;
+  uint32_t data_type = UINT32_MAX; // explicit common tensor-map tag, if known
   tensor_map_element_type element_type = tensor_map_element_type::kUnknown;
   std::array<uint32_t, 5> global_dim{{1, 1, 1, 1, 1}};
   std::array<uint32_t, 5> box_dim{{1, 1, 1, 1, 1}};
   std::array<uint64_t, 5> global_stride_bytes{};
   std::array<uint32_t, 5> element_stride{{1, 1, 1, 1, 1}};
   uint32_t swizzle_bytes = 0;
+  uint32_t swizzle_mode = UINT32_MAX;
   bool oob_zero = true;
 };
 
@@ -186,6 +195,9 @@ struct functional_tma_effect {
   uint64_t source_address = 0;
   uint32_t size_bytes = 0;
   uint32_t mbarrier_address = UINT32_MAX;
+  uint16_t destination_mask = 0;
+  uint32_t completion_mask = 0;
+  bool explicit_cluster_targets = false;
   std::array<int32_t, 5> coordinates{};
   functional_tensor_map_view tensor_map;
 };
@@ -195,6 +207,20 @@ struct functional_mbarrier_effect {
   uint32_t address = UINT32_MAX;
   uint32_t count = UINT32_MAX;
   bool parity = false;
+  uint16_t multicast_mask = 0;
+};
+
+using functional_tcgen_shared_read = tcgen05_shared_read;
+
+struct functional_tcgen_mma_effect {
+  bool valid = false;
+  bool mixed = false;
+  unsigned m = 0, n = 0, k = 0, cta_group = 1;
+  bool mxf4 = false;
+  bool ws = false, tmem_a = false;
+  unsigned shared_operand_bytes = 0;
+  std::vector<functional_tcgen_shared_read> shared_reads;
+  tcgen05_mma_metadata timing;
 };
 
 struct functional_named_barrier_effect {
@@ -209,6 +235,7 @@ struct functional_named_barrier_effect {
 // live here.
 class cta_execution_state {
 public:
+  std::shared_ptr<functional_tcgen_state> tcgen;
   explicit cta_execution_state(unsigned warp_count);
 
   unsigned warp_count() const { return warp_count_; }
@@ -217,6 +244,12 @@ public:
               unsigned expected_warp_count = 0);
   void retire_warp(unsigned warp_id);
   bool released(unsigned barrier_id, uint64_t generation) const;
+  bool can_record_barrier_reduction(unsigned id, uint64_t generation,
+                                    unsigned warp, cta_reduction_op op) const;
+  void record_barrier_reduction(unsigned id, uint64_t generation, unsigned warp,
+                                uint32_t value, cta_reduction_op op);
+  bool read_barrier_reduction(unsigned warp, uint32_t &value,
+                              cta_reduction_op &op) const;
   bool initialize_mbarrier(uint64_t address, uint32_t expected_arrivals,
                            bool initial_parity = false);
   bool mbarrier_initialized(uint64_t address) const;
@@ -253,6 +286,22 @@ private:
     uint64_t early_completed_bytes = 0;
   };
 
+  void publish_barrier_reduction(unsigned id);
+  struct reduction_state {
+    uint64_t generation = UINT64_MAX;
+    uint32_t warps = 0;
+    bool published = false;
+    cta_reduction_op op = cta_reduction_op::bit_or;
+    cta_reduction_accumulator accumulator;
+  };
+  struct reduction_result {
+    bool ready = false;
+    uint32_t value = 0;
+    cta_reduction_op op = cta_reduction_op::bit_or;
+  };
+  std::array<reduction_state, kCtaBarrierSlots> reductions_{};
+  std::array<reduction_result, kMaxCtaWarps> reduction_results_{};
+
   unsigned warp_count_ = 0;
   uint32_t expected_warps_ = 0;
   std::array<barrier_state, kCtaBarrierSlots> barriers_{};
@@ -275,6 +324,18 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch);
 // CTA barrier recorded by this warp is now released.
 bool deferred_cta_barriers_released(warp_state &warp,
                                     const cta_execution_state &cta);
+
+// TMA endpoints within a concurrently resident CTA cluster. The runtime owns
+// these objects until every member retires; frontend effects use rank masks.
+struct functional_cluster_state {
+  std::vector<cta_execution_state *> ctas;
+  std::vector<functional_memory *> memories;
+};
+
+struct functional_clc_effect {
+  bool valid = false, broadcast = false;
+  uint32_t response_address = 0, barrier_address = 0;
+};
 
 struct execution_context {
   struct functional_memory_access {
@@ -306,12 +367,16 @@ struct execution_context {
   bool architectural_cycle_valid = false;
   uint32_t virtual_smid = 0;
   cta_execution_state *cta = nullptr;
+  functional_cluster_state *cluster = nullptr;
   unsigned warp_id = 0;
   std::array<std::vector<functional_memory_access>, kWarpLanes> memory_accesses;
   std::array<functional_tma_effect, kWarpLanes> tma_effects{};
   std::array<functional_mbarrier_effect, kWarpLanes> mbarrier_effects{};
   std::vector<functional_mbarrier_effect> imported_mbarriers;
   functional_named_barrier_effect named_barrier_effect;
+  functional_tcgen_mma_effect tcgen_mma_effect;
+  functional_clc_effect clc_effect;
+  bool clc_service_available = false;
 
   void clear_instruction_effects();
   bool decode_local_memory_offset(unsigned lane, uint64_t address,

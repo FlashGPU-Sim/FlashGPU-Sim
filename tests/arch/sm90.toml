@@ -4,9 +4,11 @@ config = "SM90_H100"
 
 [workloads]
 sources = [
+  "integration/scalar_modifiers_test.cu",
   "unit/ptx_timing_isolation_test.cc",
   # Host-side simulator regression.
   "unit/register_view_reload_test.cc",
+  "unit/ptx_control_predecode_test.cc",
   "unit/kernel_retirement_test.cc",
   "unit/mbarrier_retry_timing_test.cc",
 
@@ -18,6 +20,7 @@ sources = [
   "integration/float_minmax_three_input_test.cu",
   "integration/vector_add_test.cu",
   "integration/shared_memory_optin_test.cu",
+  "integration/dynamic_shared_alignment_test.cu",
   "integration/ldst_matrix_test.cu",
   "integration/ldst_multi_sector_test.cu",
   "integration/cp_async_src_size_test.cu",

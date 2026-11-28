@@ -43,19 +43,39 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "ptx_parser.h"
 #include "ptx.tab.h"
 #include <cstdlib>
+#include <cerrno>
+#include <limits>
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
 
 #define LINEBUF_SIZE (4*1024)
 #define TC recognizer->col+=strlen(yytext);
-#define CHECK_UNSIGNED \
-	if( yytext[strlen(yytext)-1]=='U' ) { \
-		printf("GPGPU-Sim: ERROR ** U modifier not implemented\n"); \
-		abort(); \
-	}
 #define YY_DECL int ptx_lex \
 	       (YYSTYPE * yylval_param , yyscan_t yyscanner, ptx_recognizer* recognizer)
 int ptx_error( yyscan_t yyscanner, ptx_recognizer* recognizer, const char *s );
+
+// YYSTYPE keeps a signed carrier, but PTX immediates may use all 64 bits.
+// Negation is modulo 2^64, never a host signed-overflow operation. Constant
+// expressions are not evaluated here; instruction type determines conversion.
+static long long parse_integer_literal(const char *text, int base) {
+  const bool negative = text[0] == '-';
+  const char *digits = text + (negative ? 1 : 0);
+  if (base == 2) digits += 2;  // strtoull need not understand the 0b prefix.
+  errno = 0;
+  char *end = nullptr;
+  unsigned long long bits = strtoull(digits, &end, base);
+  if (errno == ERANGE || end == digits ||
+      (*end != '\0' && !(end[0] == 'U' && end[1] == '\0'))) {
+    fprintf(stderr, "GPGPU-Sim: integer literal out of range: %s\n", text);
+    abort();
+  }
+  if (negative) bits = 0ULL - bits;
+  static_assert(std::numeric_limits<unsigned long long>::digits == 64,
+                "PTX requires 64-bit integer literals");
+  long long result;
+  memcpy(&result, &bits, sizeof(result));
+  return result;
+}
 
 static int parse_wgmma_shape_option(const char *text) {
   int n = 0;
@@ -100,6 +120,7 @@ cp\.async\.wait_all TC; yylval->int_value = CP_ASYNC_WAIT_OP; return OPCODE;
 cp\.async 		TC; yylval->int_value = CP_ASYNC_OP; return OPCODE;
 bfe     TC; yylval->int_value = BFE_OP; return OPCODE;
 bfi     TC; yylval->int_value = BFI_OP; return OPCODE;
+fns     TC; yylval->int_value = FNS_OP; return OPCODE;
 bfind   TC; yylval->int_value = BFIND_OP; return OPCODE;
 bra     TC; yylval->int_value = BRA_OP; return OPCODE;
 brx     TC; yylval->int_value = BRX_OP; return OPCODE;
@@ -134,6 +155,7 @@ isspacep TC; yylval->int_value = ISSPACEP_OP; return OPCODE;
 ld      TC; yylval->int_value = LD_OP; return OPCODE;
 ld.volatile TC; yylval->int_value = LD_OP; return OPCODE;
 ldu     TC; yylval->int_value = LDU_OP; return OPCODE;
+lop3 TC; yylval->int_value = LOP3_OP; return OPCODE;
 lg2	TC; yylval->int_value = LG2_OP; return OPCODE;
 griddepcontrol TC; yylval->int_value = GRIDDEPCONTROL_OP; return OPCODE;
 mad24   TC; yylval->int_value = MAD24_OP; return OPCODE;
@@ -178,6 +200,7 @@ slct	TC; yylval->int_value = SLCT_OP; return OPCODE;
 sqrt	TC; yylval->int_value = SQRT_OP; return OPCODE;
 sst	TC; yylval->int_value = SST_OP; return OPCODE;
 ssy     TC; yylval->int_value = SSY_OP; return OPCODE;
+st\.bulk(\.weak)? TC; yylval->int_value = ST_BULK_OP; return OPCODE;
 st      TC; yylval->int_value = ST_OP; return OPCODE;
 st.volatile TC; yylval->int_value = ST_OP; return OPCODE;
 sub	TC; yylval->int_value = SUB_OP; return OPCODE;
@@ -191,10 +214,13 @@ tex	TC; BEGIN(NOT_OPCODE); yylval->int_value = TEX_OP; return OPCODE;
 txq	TC; yylval->int_value = TEX_OP; return OPCODE;
 tensormap	TC; yylval->int_value = TENSORMAP_OP; return OPCODE;
 fence	TC; yylval->int_value = FENCE_OP; return OPCODE;
+redux	TC; yylval->int_value = REDUX_OP; return OPCODE;
 elect	TC; yylval->int_value = ELECT_OP; return OPCODE;
 ldmatrix	TC; yylval->int_value = LDMATRIX_OP; return OPCODE;
 stmatrix	TC; yylval->int_value = STMATRIX_OP; return OPCODE;
 tcgen05\.relinquish_alloc_permit TC; yylval->int_value = TCGEN05_RELINQUISH_ALLOC_PERMIT_OP; return OPCODE;
+clusterlaunchcontrol\.try_cancel TC; yylval->int_value = CLC_TRY_CANCEL_OP; return OPCODE;
+clusterlaunchcontrol\.query_cancel TC; yylval->int_value = CLC_QUERY_CANCEL_OP; return OPCODE;
 tcgen05\.alloc TC; yylval->int_value = TCGEN05_ALLOC_OP; return OPCODE;
 tcgen05\.dealloc TC; yylval->int_value = TCGEN05_DEALLOC_OP; return OPCODE;
 tcgen05\.mma TC; yylval->int_value = TCGEN05_MMA_OP; return OPCODE;
@@ -287,6 +313,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.reqntid TC; return REQNTID_DIRECTIVE;
 \.explicitcluster TC; return EXPLICITCLUSTER_DIRECTIVE;
 \.reqnctapercluster TC; return REQNCTAPERCLUSTER_DIRECTIVE;
+\.maxclusterrank TC; return MAXCLUSTERRANK_DIRECTIVE;
 \.section TC; return SECTION_DIRECTIVE;
 \.section[ \t]+\.debug_[a-z]+ TC; BEGIN(IN_DEBUG_SECTION); /* skip debug sections */
 \.debug_abbrev TC; return DEBUG_DIRECTIVE;
@@ -355,10 +382,10 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 [0-9]+\.[0-9]+ 	 TC; sscanf(yytext,"%lf", &yylval->double_value); return DOUBLE_OPERAND;
 	
-0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; yylval->int_value = (long long)strtoull(yytext, NULL, 0); return INT_OPERAND;
-0[0-7]+U?   	TC; printf("GPGPU-Sim: ERROR ** parsing octal not (yet) implemented\n"); abort(); return INT_OPERAND;
-0[bB][01]+U?  	TC; printf("GPGPU-Sim: ERROR ** parsing binary not (yet) implemented\n"); abort(); return INT_OPERAND;
-[-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value = strtoll(yytext, NULL, 10); return INT_OPERAND;
+[-]?0[xX][0-9a-fA-F]+U? TC; yylval->int_value = parse_integer_literal(yytext, 16); return INT_OPERAND;
+[-]?0[0-9]+U?           TC; yylval->int_value = parse_integer_literal(yytext, 8); return INT_OPERAND;
+[-]?0[bB][01]+U?        TC; yylval->int_value = parse_integer_literal(yytext, 2); return INT_OPERAND;
+[-]?[0-9]+U?        TC; yylval->int_value = parse_integer_literal(yytext, 10); return INT_OPERAND;
 
 0[fF][0-9a-fA-F]{8}  TC; sscanf(yytext+2,"%x", (unsigned*)(void*)&yylval->float_value); return FLOAT_OPERAND;
 0[dD][0-9a-fA-F]{16}  TC; sscanf(yytext+2,"%Lx", (unsigned long long*)(void*)&yylval->double_value); return DOUBLE_OPERAND;
@@ -373,6 +400,10 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.u64  TC;  return U64_TYPE;
 \.f16  TC;  return F16_TYPE;
 \.f16x2  TC;  return F16X2_TYPE;
+\.bf16x2 TC; return BF16X2_TYPE;
+\.e4m3x2 TC; return E4M3X2_TYPE;
+\.ue8m0x2 TC; return UE8M0X2_TYPE;
+\.e2m1x2 TC; return E2M1X2_TYPE;
 \.bf16  TC;  return BF16_TYPE;
 \.tf32  TC;  return TF32_TYPE;
 \.e4m3  TC;  return E4M3_TYPE;
@@ -388,6 +419,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.b64  TC;  return B64_TYPE;
 \.bb64  TC;  return BB64_TYPE;
 \.bb128  TC;  return BB128_TYPE;
+\.b128 TC; return BB128_TYPE;
 \.pred TC;  return PRED_TYPE;
 
 \.texref TC; BEGIN(NOT_OPCODE); return TEXREF_TYPE;
@@ -409,8 +441,9 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.gtu	TC; return GTU_OPTION;
 \.geu	TC; return GEU_OPTION;
 \.num	TC; return NUM_OPTION;
-\.nan	TC; return NAN_OPTION;
+\.(nan|NaN)	TC; return NAN_OPTION;
 
+\.relu TC; return RELU_OPTION;
 \.satfinite	TC; return SATFINITE_OPTION;
 \.sat	TC; return SAT_OPTION;
 
@@ -457,6 +490,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.complete_tx TC; return COMPLETE_TX_OPTION;
 \.red TC; return RED_OPTION;
 
+\.shiftamt TC; return SHIFTAMT_OPTION;
 \.clamp	TC; return CLAMP_OPTION;
 \.wrap	TC; return WRAP_OPTION;
 
@@ -477,6 +511,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 \.init  TC; return INIT_OPTION;
 \.inval TC; return INVAL_OPTION;
+\.m16n8 TC; return M16N8_OPTION;
 \.m8n8 TC; return M8N8_OPTION;
 \.trans TC; return TRANS_OPTION;
 \.x1 TC; return X1_OPTION;
@@ -484,6 +519,32 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.x4 TC; return X4_OPTION;
 \.x16 TC; return X16_OPTION;
 \.x32 TC; return X32_OPTION;
+\.x8 TC; return X8_OPTION;
+\.x64 TC; return X64_OPTION;
+\.x128 TC; return X128_OPTION;
+\.ws TC; return TCGEN05_WS_OPTION;
+\.collector::b0::discard TC; return TCGEN05_COLLECTOR_B0_DISCARD_OPTION;
+\.collector::b0::fill TC; return TCGEN05_COLLECTOR_B0_FILL_OPTION;
+\.collector::b0::use TC; return TCGEN05_COLLECTOR_B0_USE_OPTION;
+\.collector::b0::lastuse TC; return TCGEN05_COLLECTOR_B0_LASTUSE_OPTION;
+\.collector::b1::discard TC; return TCGEN05_COLLECTOR_B1_DISCARD_OPTION;
+\.collector::b1::fill TC; return TCGEN05_COLLECTOR_B1_FILL_OPTION;
+\.collector::b1::use TC; return TCGEN05_COLLECTOR_B1_USE_OPTION;
+\.collector::b1::lastuse TC; return TCGEN05_COLLECTOR_B1_LASTUSE_OPTION;
+\.collector::b2::discard TC; return TCGEN05_COLLECTOR_B2_DISCARD_OPTION;
+\.collector::b2::fill TC; return TCGEN05_COLLECTOR_B2_FILL_OPTION;
+\.collector::b2::use TC; return TCGEN05_COLLECTOR_B2_USE_OPTION;
+\.collector::b2::lastuse TC; return TCGEN05_COLLECTOR_B2_LASTUSE_OPTION;
+\.collector::b3::discard TC; return TCGEN05_COLLECTOR_B3_DISCARD_OPTION;
+\.collector::b3::fill TC; return TCGEN05_COLLECTOR_B3_FILL_OPTION;
+\.collector::b3::use TC; return TCGEN05_COLLECTOR_B3_USE_OPTION;
+\.collector::b3::lastuse TC; return TCGEN05_COLLECTOR_B3_LASTUSE_OPTION;
+\.block_scale TC; return TCGEN05_BLOCK_SCALE_OPTION;
+\.block32 TC; return TCGEN05_BLOCK32_OPTION;
+\.scale_vec::1X TC; return TCGEN05_SCALE_VEC_1X_OPTION;
+\.scale_vec::2X TC; return TCGEN05_SCALE_VEC_2X_OPTION;
+\.scale_vec::4X TC; return TCGEN05_SCALE_VEC_4X_OPTION;
+\.block16 TC; return TCGEN05_BLOCK16_OPTION;
 \.cta_group::1 TC; return TCGEN05_CTA_GROUP_1_OPTION;
 \.cta_group::2 TC; return TCGEN05_CTA_GROUP_2_OPTION;
 \.kind::f16 TC; return TCGEN05_KIND_F16_OPTION;
@@ -520,6 +581,12 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.shared::cta TC; return CTA_OPTION;
 \.shared::cluster TC; return CLUSTER_OPTION;
 \.cluster TC; return CLUSTER_OPTION;
+\.multicast::cluster::all TC; return CLC_MULTICAST_ALL_OPTION;
+\.is_canceled TC; return CLC_IS_CANCELED_OPTION;
+\.get_first_ctaid::x TC; return CLC_GET_X_OPTION;
+\.get_first_ctaid::y TC; return CLC_GET_Y_OPTION;
+\.get_first_ctaid::z TC; return CLC_GET_Z_OPTION;
+\.get_first_ctaid TC; return CLC_GET_XYZ_OPTION;
 \.multicast::cluster TC; return MULTICAST_CLUSTER_OPTION;
 \.tensor TC; return TENSOR_OPTION;
 \.1d	TC; return DIM_1D_OPTION;
@@ -529,6 +596,7 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.5d	TC; return DIM_5D_OPTION;
 
 \.replace TC; return REPLACE_OPTION;
+\.tile::gather4 TC; return GATHER4_OPTION;
 \.tile TC; return TILE_OPTION;
 \.global_address TC; return GLOBAL_ADDRESS_OPTION;
 \.rank TC; return RANK_OPTION;
@@ -544,9 +612,12 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.cp_fenceproxy TC; return CP_FENCEPROXY_OPTION;
 \.release TC; return RELEASE_OPTION;
 \.relaxed TC; return RELAXED_OPTION;
+\.acq_rel TC; return ACQ_REL_OPTION;
 \.acquire TC; return ACQUIRE_OPTION;
 \.gpu TC; return GPU_OPTION;
-\.L2::128B TC; return L2_OPTION;
+\.L2::(64|128|256)B TC; return L2_OPTION;
+\.L2::evict_first TC; return L2_OPTION;
+\.L1::no_allocate TC; return L1_NO_ALLOCATE_OPTION;
 \.L2::cache_hint TC; return L2_CACHE_HINT_OPTION;
 \.L2 TC; return L2_OPTION;
 \.aligned TC; return ALIGNED_OPTION;

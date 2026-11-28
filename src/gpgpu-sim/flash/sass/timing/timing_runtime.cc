@@ -1,5 +1,6 @@
 #include "timing_runtime.h"
 #include "../../panic.h"
+#include "../runtime/tensor_map.h"
 
 #include "../runtime/launch_geometry.h"
 
@@ -92,6 +93,14 @@ timing_profile profile_from_config(const core_config *config) {
   const shader_core_config *shader_config =
       dynamic_cast<const shader_core_config *>(config);
   if (shader_config != nullptr) {
+    profile.imad_on_sp = shader_config->gpgpu_native_imad_on_sp;
+    profile.fp32_aux_paths = shader_config->gpgpu_native_fp32_aux_paths;
+    profile.imad_wide_initiation =
+        shader_config->gpgpu_native_imad_wide_initiation;
+    profile.imad_wide_min_issue_interval =
+        shader_config->gpgpu_native_imad_wide_min_issue_interval;
+    profile.imad_wide_result_latency =
+        shader_config->gpgpu_native_imad_wide_result_latency;
     profile.async_proxy_fence_extra_stall =
         shader_config->gpgpu_async_proxy_fence_extra_stall;
     profile.async_proxy_fence_dirty_extra_stall =
@@ -145,12 +154,17 @@ public:
       panic("SASS timing kernel has no parameter ABI");
     if (image_->arch == architecture::kSm90)
       register_sm90_functional_semantics(frontend_);
+    else if (image_->arch == architecture::kSm100 ||
+             image_->arch == architecture::kSm103)
+      register_sm100_functional_semantics(frontend_);
     else if (image_->arch == architecture::kSm120)
       register_sm120_functional_semantics(frontend_);
     else
       panic("unsupported SASS timing architecture");
 
     for (const instruction &source : image_->instructions) {
+      if (source.opcode == "UTCATOMSWS.2CTA.FIND_AND_SET.ALIGN")
+        uses_paired_allocator_ = true;
       auto projected =
           std::make_unique<timing_instruction>(source, *config, profile_);
       const bool inserted =
@@ -165,6 +179,7 @@ public:
     return found == instructions_.end() ? nullptr : found->second.get();
   }
 
+  bool uses_paired_allocator() const { return uses_paired_allocator_; }
   uint64_t start_pc() const { return image_->instructions.front().pc; }
   architecture arch() const { return image_->arch; }
   uint32_t parameter_base() const { return image_->parameter_base; }
@@ -182,6 +197,7 @@ public:
   }
 
 private:
+  bool uses_paired_allocator_ = false;
   timing_profile profile_;
   frontend frontend_;
   const kernel *image_ = nullptr;
@@ -211,6 +227,7 @@ load_timing_image(const std::string &sassir_path,
   return image;
 }
 
+struct timing_cluster_state;
 struct timing_cta_state {
   timing_cta_state(const timing_kernel_image &image, kernel_info_t &launch,
                    ::memory_space *global_memory, unsigned first_warp,
@@ -225,7 +242,14 @@ struct timing_cta_state {
                      image.profile().async_proxy_fence_dirty_initiation_stall}),
         memory(make_runtime_functional_memory(
             launch, global_memory, image.arch(), image.parameter_base(),
-            image.parameter_size(), image.constant_banks())) {
+            image.parameter_size(), image.constant_banks(),
+            launch.is_cluster_launch()
+                ? (cta_id.x % launch.get_cluster_dim().x +
+                   launch.get_cluster_dim().x *
+                       (cta_id.y % launch.get_cluster_dim().y +
+                        launch.get_cluster_dim().y *
+                            (cta_id.z % launch.get_cluster_dim().z)))
+                : UINT32_MAX)) {
     const dim3 block = launch.get_cta_dim();
     const uint64_t threads = launch.threads_per_cta();
     for (unsigned local_warp = 0; local_warp < count; ++local_warp) {
@@ -237,6 +261,7 @@ struct timing_cta_state {
       execution_context &context = contexts[local_warp];
       context.memory = memory.get();
       context.cta = &cta;
+      context.clc_service_available = true;
       context.warp_id = local_warp;
       context.virtual_smid = virtual_smid;
       context.cta_id_x = cta_id.x;
@@ -276,7 +301,22 @@ struct timing_cta_state {
   std::array<uint64_t, kCtaBarrierSlots> named_barrier_visible_cycle{};
   async_proxy_timing async_proxy;
   std::unique_ptr<functional_memory> memory;
+  std::weak_ptr<timing_cluster_state> cluster;
+  uint64_t cluster_id = 0;
 };
+
+struct timing_cluster_state {
+  functional_cluster_state functional;
+  std::vector<std::shared_ptr<timing_cta_state>> ctas;
+  std::vector<bool> released;
+  explicit timing_cluster_state(unsigned n) : ctas(n), released(n) {
+    functional.ctas.resize(n);
+    functional.memories.resize(n);
+  }
+};
+std::mutex timing_clusters_mutex;
+std::map<std::pair<uint64_t, uint64_t>, std::shared_ptr<timing_cluster_state>>
+    timing_clusters;
 
 memory_space_t backend_space(memory_space space) {
   switch (space) {
@@ -314,45 +354,6 @@ uint32_t instruction_execution_mask(const instruction &inst,
   return result;
 }
 
-uint32_t backend_tensor_dtype(const functional_tensor_map_view &view) {
-  switch (view.element_type) {
-  case tensor_map_element_type::kUnsigned32:
-    return TMA_DTYPE_U32;
-  case tensor_map_element_type::kFloat16:
-    return TMA_DTYPE_F16;
-  case tensor_map_element_type::kFloat32:
-    return TMA_DTYPE_F32;
-  case tensor_map_element_type::kFloat32Ftz:
-    return TMA_DTYPE_F32_FTZ;
-  case tensor_map_element_type::kUnknown:
-    if (view.element_bytes == 1)
-      return TMA_DTYPE_U8;
-    if (view.element_bytes == 2)
-      return TMA_DTYPE_U16;
-    if (view.element_bytes == 4)
-      return TMA_DTYPE_U32;
-    if (view.element_bytes == 8)
-      return TMA_DTYPE_U64;
-    break;
-  }
-  panic("unsupported SASS tensor-map element type");
-}
-
-uint32_t backend_tensor_swizzle(uint32_t bytes) {
-  switch (bytes) {
-  case 0:
-    return TMA_SWIZZLE_NONE;
-  case 32:
-    return TMA_SWIZZLE_32B;
-  case 64:
-    return TMA_SWIZZLE_64B;
-  case 128:
-    return TMA_SWIZZLE_128B;
-  default:
-    panic("unsupported SASS tensor-map swizzle");
-  }
-}
-
 inst_t::tma_dyn_info_t backend_tma_effect(const functional_tma_effect &effect) {
   if (!effect.valid || effect.size_bytes == 0 || effect.tensor_map.rank > 5)
     panic("invalid SASS functional TMA effect");
@@ -361,6 +362,12 @@ inst_t::tma_dyn_info_t backend_tma_effect(const functional_tma_effect &effect) {
   result.src_addr = effect.source_address;
   result.size_in_bytes = effect.size_bytes;
   result.mbar_addr = effect.mbarrier_address;
+  if (effect.explicit_cluster_targets) {
+    result.has_cta_mask = true;
+    result.cta_mask = effect.destination_mask;
+    result.has_completion_mask = true;
+    result.completion_mask = effect.completion_mask;
+  }
   std::copy(effect.coordinates.begin(), effect.coordinates.end(),
             result.coords);
 
@@ -370,23 +377,7 @@ inst_t::tma_dyn_info_t backend_tma_effect(const functional_tma_effect &effect) {
   if (effect.tensor_map.rank == 0)
     return result;
 
-  tensormap_descriptor_t descriptor{};
-  const functional_tensor_map_view &view = effect.tensor_map;
-  descriptor.fields.globalAddress = view.global_address;
-  descriptor.fields.tensorRank = view.rank - 1;
-  for (unsigned dimension = 0; dimension < view.rank; ++dimension) {
-    descriptor.fields.boxDim[dimension] = view.box_dim[dimension];
-    descriptor.fields.globalDim[dimension] = view.global_dim[dimension];
-    descriptor.fields.elementStrides[dimension] =
-        view.element_stride[dimension];
-    if (dimension != 0)
-      descriptor.fields.globalStrides[dimension - 1] =
-          view.global_stride_bytes[dimension];
-  }
-  descriptor.fields.tensorDataType = backend_tensor_dtype(view);
-  descriptor.fields.interleave = TMA_INTERLEAVE_NONE;
-  descriptor.fields.swizzle = backend_tensor_swizzle(view.swizzle_bytes);
-  descriptor.fields.oobFill = view.oob_zero ? TMA_OOB_ZERO : TMA_OOB_NAN;
+  const auto descriptor = backend_tensor_map(effect.tensor_map);
   static_assert(sizeof(result.tensormap_descriptor) ==
                     sizeof(descriptor.raw_bytes),
                 "backend tensor-map descriptor size mismatch");
@@ -428,14 +419,19 @@ public:
   unsigned launch_uid_ = 0;
   ::memory_space *global_memory_ = nullptr;
   std::shared_ptr<const timing_kernel_image> image_;
-  std::unordered_map<unsigned, std::unique_ptr<timing_cta_state>> ctas_;
+  std::unordered_map<unsigned, std::shared_ptr<timing_cta_state>> ctas_;
   std::unordered_map<unsigned, unsigned> warp_to_cta_;
 };
 
 timing_runtime::timing_runtime(const core_config *config, unsigned shader_id)
     : impl_(std::make_unique<impl>(config, shader_id)) {}
 
-timing_runtime::~timing_runtime() = default;
+timing_runtime::~timing_runtime() { reset(); }
+
+bool timing_runtime::uses_paired_allocator() const {
+  return impl_->launch_ && impl_->launch_->is_cluster_launch() &&
+         impl_->image_ && impl_->image_->uses_paired_allocator();
+}
 
 void timing_runtime::bind(kernel_info_t &launch,
                           ::memory_space *global_memory) {
@@ -471,10 +467,44 @@ void timing_runtime::start_cta(unsigned hardware_cta_id,
   timing_debug("creating CTA architectural state");
   const dim3 cta_id =
       linear_to_cta(linear_cta_id, impl_->launch_->get_grid_dim());
-  auto cta = std::make_unique<timing_cta_state>(
+  auto cta = std::make_shared<timing_cta_state>(
       *impl_->image_, *impl_->launch_, impl_->global_memory_,
       first_hardware_warp, warp_count, linear_cta_id, cta_id,
       impl_->shader_id_);
+  if (impl_->launch_->is_cluster_launch()) {
+    const auto shape = impl_->launch_->get_cluster_dim(),
+               grid = impl_->launch_->get_grid_dim();
+    const unsigned size = shape.x * shape.y * shape.z;
+    if (!size || size > 16 || grid.x % shape.x || grid.y % shape.y ||
+        grid.z % shape.z)
+      panic("native gather4 requires complete clusters of at most 16 CTAs");
+    const unsigned rank =
+        (cta_id.x % shape.x) +
+        shape.x * ((cta_id.y % shape.y) + shape.y * (cta_id.z % shape.z));
+    cta->cluster_id =
+        (cta_id.x / shape.x) +
+        (grid.x / shape.x) *
+            ((cta_id.y / shape.y) + (grid.y / shape.y) * (cta_id.z / shape.z));
+    std::lock_guard<std::mutex> lock(timing_clusters_mutex);
+    auto &cluster =
+        timing_clusters[{impl_->launch_->get_uid(), cta->cluster_id}];
+    if (!cluster)
+      cluster = std::make_shared<timing_cluster_state>(size);
+    if (cluster->ctas[rank])
+      panic("duplicate native cluster rank");
+    cluster->ctas[rank] = cta;
+    cluster->functional.ctas[rank] = &cta->cta;
+    cluster->functional.memories[rank] = cta->memory.get();
+    cta->cluster = cluster;
+    for (auto &context : cta->contexts) {
+      context.cluster = &cluster->functional;
+      context.cga_cta_id = rank;
+    }
+  }
+  if (uses_paired_allocator()) {
+    const auto rank = cta->contexts[0].cga_cta_id;
+    cta->cta.initialize_mbarrier(0x48, 1, !(rank & 1));
+  }
   for (unsigned local_warp = 0; local_warp < warp_count; ++local_warp) {
     const unsigned hardware_warp = first_hardware_warp + local_warp;
     if (!impl_->warp_to_cta_.emplace(hardware_warp, hardware_cta_id).second)
@@ -484,10 +514,21 @@ void timing_runtime::start_cta(unsigned hardware_cta_id,
   timing_debug("CTA architectural state is ready");
 }
 
+::memory_space *timing_runtime::shared_memory(unsigned hardware_cta_id) {
+  return runtime_shared_memory(*impl_->ctas_.at(hardware_cta_id)->memory);
+}
+
 void timing_runtime::release_cta(unsigned hardware_cta_id) {
   const auto found = impl_->ctas_.find(hardware_cta_id);
   if (found == impl_->ctas_.end())
     return;
+  if (auto cluster = found->second->cluster.lock()) {
+    std::lock_guard<std::mutex> lock(timing_clusters_mutex);
+    cluster->released[found->second->contexts[0].cga_cta_id] = true;
+    if (std::all_of(cluster->released.begin(), cluster->released.end(),
+                    [](bool b) { return b; }))
+      timing_clusters.erase({impl_->launch_uid_, found->second->cluster_id});
+  }
   for (unsigned local_warp = 0; local_warp < found->second->warps.size();
        ++local_warp)
     impl_->warp_to_cta_.erase(found->second->first_hardware_warp + local_warp);
@@ -495,8 +536,9 @@ void timing_runtime::release_cta(unsigned hardware_cta_id) {
 }
 
 void timing_runtime::reset() {
+  while (!impl_->ctas_.empty())
+    release_cta(impl_->ctas_.begin()->first);
   impl_->warp_to_cta_.clear();
-  impl_->ctas_.clear();
   impl_->launch_ = nullptr;
   impl_->launch_uid_ = 0;
   impl_->global_memory_ = nullptr;
@@ -602,6 +644,12 @@ bool timing_runtime::deferred_barrier_can_issue(unsigned hardware_warp_id,
   return false;
 }
 
+void timing_runtime::complete_clc(unsigned hardware_cta, uint32_t barrier) {
+  auto &cta = *impl_->ctas_.at(hardware_cta);
+  if (!cta.cta.complete_mbarrier_transaction(barrier, 16, true))
+    panic("CLC response has no initialized native barrier");
+}
+
 mbarrier_try_wait_state
 timing_runtime::complete_mbarrier_try_wait(unsigned hardware_warp_id) {
   timing_cta_state &cta = impl_->cta_for_warp(hardware_warp_id);
@@ -651,6 +699,7 @@ timing_step_result timing_runtime::step(
   result.executed_mask = instruction_execution_mask(*source, warp);
   result.frontend_result = impl_->image_->functional_frontend().step(
       impl_->image_->name(), warp, context);
+  result.clc = context.clc_effect;
   if (context.named_barrier_effect.valid) {
     const unsigned id = context.named_barrier_effect.id;
     const uint64_t generation = cta.cta.generation(id);
@@ -681,11 +730,25 @@ timing_step_result timing_runtime::step(
   }
 
   project_mbarrier_effects(context, dynamic_instruction);
+  dynamic_instruction.reset_tcgen05_dyn_info();
+  if (context.tcgen_mma_effect.valid) {
+    const auto &mma = context.tcgen_mma_effect;
+    inst_t::tcgen05_dyn_info_t effect;
+    effect.mma_work = 2ull * mma.m * mma.n * mma.k;
+    effect.mma = mma.timing;
+    tcgen05_account_shared(effect.mma, mma.shared_reads);
+    dynamic_instruction.set_tcgen05_dyn_info(0, effect);
+  }
   dynamic_instruction.reset_tma_dyn_info();
   if (context.named_barrier_effect.valid) {
     dynamic_instruction.set_bar_id(context.named_barrier_effect.id);
     dynamic_instruction.set_bar_count(
         context.named_barrier_effect.participant_count);
+  }
+  if (source->opcode == "UBLKCP.S.G" && context.cluster) {
+    auto info = dynamic_instruction.get_tma_static_info();
+    info.dst_space = inst_t::tma_static_info_t::TMA_SHARED_CLUSTER;
+    dynamic_instruction.set_tma_static_info(info);
   }
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if (context.tma_effects[lane].valid)
@@ -694,7 +757,7 @@ timing_step_result timing_runtime::step(
   }
   const bool generic_memory = source->opcode.rfind("LD.E", 0) == 0 ||
                               source->opcode.rfind("ST.E", 0) == 0;
-  const bool shared_atomic_proxy = source->opcode == "ATOMS.ADD";
+  const bool shared_atomic_proxy = uses_shared_atomic_timing_proxy(*source);
   bool generic_space_resolved = false;
   if (timing_debug_enabled()) {
     std::fprintf(stderr,
@@ -726,6 +789,9 @@ timing_step_result timing_runtime::step(
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     const auto &accesses = context.memory_accesses[lane];
     if (accesses.empty()) {
+      if (source->opcode == "UMEMSETS.64" ||
+          source->opcode.rfind("UREDGR.", 0) == 0)
+        dynamic_instruction.set_not_active(lane);
       // A false LDGSTS copy-enable predicate zero-fills shared memory without
       // issuing a global-memory request. Keep the lane in the instruction so
       // group accounting still sees the warp-level copy, but suppress its

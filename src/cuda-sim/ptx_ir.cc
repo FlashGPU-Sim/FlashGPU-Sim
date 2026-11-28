@@ -1162,6 +1162,16 @@ unsigned type_info_key::type_decode(int type, size_t &size, int &basic_type) {
       size = 16;
       basic_type = -1;
       return 8;
+    case E4M3X2_TYPE:
+      size = 16; basic_type = -1; return 25;
+    case UE8M0X2_TYPE:
+      size = 16; basic_type = -1; return 26;
+    case E2M1X2_TYPE:
+      size = 8; basic_type = -1; return 27;
+    case BF16X2_TYPE:
+      size = 32;
+      basic_type = -1;
+      return 24;
     case BF16_TYPE:
       size = 16;
       basic_type = -1;
@@ -1325,11 +1335,28 @@ static std::list<operand_info> check_operands(
     int opcode, const std::list<int> &scalar_type,
     const std::list<operand_info> &operands, gpgpu_context *ctx) {
   static int g_warn_literal_operands_two_type_inst;
-  if ((opcode == CVT_OP) || (opcode == SET_OP) || (opcode == SLCT_OP) ||
-      (opcode == TEX_OP) || (opcode == MMA_OP) || (opcode == TENSOR_MMA_OP) ||
-      (opcode == FMA_OP) ||
-      (opcode == WGMMA_MMA_ASYNC_OP) ||
-      (opcode == WGMMA_MMA_ASYNC_SP_OP) ||
+  // Scalar mixed arithmetic has 16-bit input bits but a 32-bit accumulator.
+  // Keep the legacy single-type literal conversion path unchanged.
+  const bool mixed = scalar_type.size() == 2 && scalar_type.front() == F32_TYPE &&
+      (scalar_type.back() == F16_TYPE || scalar_type.back() == BF16_TYPE) &&
+      (opcode == ADD_OP || opcode == SUB_OP || opcode == FMA_OP);
+  if (mixed) {
+    std::list<operand_info> result;
+    unsigned index = 0;
+    for (const auto &operand : operands) {
+      const bool fp32 = index == 0 || index == (opcode == FMA_OP ? 3u : 2u);
+      if (fp32 && operand.is_literal() && operand.get_type() == double_op_t)
+        result.emplace_back(static_cast<float>(operand.get_literal_value().f64), ctx);
+      else
+        result.push_back(operand);
+      ++index;
+    }
+    return result;
+  }
+  if ((opcode == CLC_QUERY_CANCEL_OP) || (opcode == CVT_OP) ||
+      (opcode == SET_OP) || (opcode == SLCT_OP) || (opcode == TEX_OP) ||
+      (opcode == MMA_OP) || (opcode == TENSOR_MMA_OP) || (opcode == FMA_OP) ||
+      (opcode == WGMMA_MMA_ASYNC_OP) || (opcode == WGMMA_MMA_ASYNC_SP_OP) ||
       (opcode == DP4A_OP) || (opcode == VMIN_OP) || (opcode == VMAX_OP)) {
     // just make sure these do not have have const operands...
     if (!g_warn_literal_operands_two_type_inst) {
@@ -1591,6 +1618,9 @@ ptx_instruction::ptx_instruction(
         if (m_is_mma_instruction) m_mma_saturate = true;
         if (m_is_wgmma_instruction) m_wgmma_saturate = true;
         break;
+      case SHIFTAMT_OPTION:
+        assert(opcode == BFIND_OP && "shiftamt requires bfind");
+        break;
       case WRAP_OPTION:
         m_clamp_mode = 0;
         break;
@@ -1677,11 +1707,27 @@ ptx_instruction::ptx_instruction(
       case CTA_OPTION:
         m_membar_level = CTA_OPTION;
         break;
+      case CLUSTER_OPTION:
+        m_membar_level = CLUSTER_OPTION;
+        break;
       case SYS_OPTION:
         m_membar_level = SYS_OPTION;
         break;
+      case ACQ_REL_OPTION:
+        if (opcode != FENCE_OP ||
+            std::find(options.begin(), options.end(), PROXY_OPTION) != options.end()) {
+          fprintf(stderr, "PTX .acq_rel is only qualified on ordinary fence\n");
+          abort();
+        }
+        break;
       case SC_OPTION:
         // fence.sc.* : sequential-consistency order; scope is a later option.
+        break;
+      case RELU_OPTION:
+        if (opcode != CVT_OP) {
+          fprintf(stderr, "PTX .relu is only qualified on cvt\n");
+          abort();
+        }
         break;
       case FTZ_OPTION:
         break;
@@ -1728,6 +1774,11 @@ ptx_instruction::ptx_instruction(
       case PRMT_RC16_MODE:
         m_prmt_op = last_ptx_inst_option;
         break;
+      case L1_NO_ALLOCATE_OPTION:
+        // Replacement hint, not .cg: retain the original cache operator.
+        // L1 allocation/replacement policy is not calibrated here.
+        assert(opcode == LD_OP || opcode == ST_OP);
+        break;
       case TENSOR_OPTION:
       case DIM_1D_OPTION: 
       case DIM_2D_OPTION: 
@@ -1735,6 +1786,7 @@ ptx_instruction::ptx_instruction(
       case DIM_4D_OPTION: 
       case DIM_5D_OPTION: 
       case REPLACE_OPTION:
+      case GATHER4_OPTION:
       case TILE_OPTION:
       case GLOBAL_ADDRESS_OPTION:
       case RANK_OPTION:
@@ -1758,11 +1810,18 @@ ptx_instruction::ptx_instruction(
       case GENERIC_OPTION:
       case PROXY_OPTION:
       case ASYNC_OPTION:
+      case WEAK_DIRECTIVE:
       case TENSORMAP_OPTION:
       case READ_OPTION:
       case BULK_GROUP_OPTION:
-      case CLUSTER_OPTION:
+      case CLC_MULTICAST_ALL_OPTION:
+      case CLC_IS_CANCELED_OPTION:
+      case CLC_GET_X_OPTION:
+      case CLC_GET_Y_OPTION:
+      case CLC_GET_Z_OPTION:
+      case CLC_GET_XYZ_OPTION:
       case MULTICAST_CLUSTER_OPTION:
+      case M16N8_OPTION:
       case M8N8_OPTION:
       case MBARRIER_INIT_OPTION:
       case TRANS_OPTION:
@@ -1771,6 +1830,32 @@ ptx_instruction::ptx_instruction(
       case X4_OPTION:
       case X16_OPTION:
       case X32_OPTION:
+      case X8_OPTION:
+      case X64_OPTION:
+      case X128_OPTION:
+      case TCGEN05_WS_OPTION:
+      case TCGEN05_COLLECTOR_B0_DISCARD_OPTION:
+      case TCGEN05_COLLECTOR_B0_FILL_OPTION:
+      case TCGEN05_COLLECTOR_B0_USE_OPTION:
+      case TCGEN05_COLLECTOR_B0_LASTUSE_OPTION:
+      case TCGEN05_COLLECTOR_B1_DISCARD_OPTION:
+      case TCGEN05_COLLECTOR_B1_FILL_OPTION:
+      case TCGEN05_COLLECTOR_B1_USE_OPTION:
+      case TCGEN05_COLLECTOR_B1_LASTUSE_OPTION:
+      case TCGEN05_COLLECTOR_B2_DISCARD_OPTION:
+      case TCGEN05_COLLECTOR_B2_FILL_OPTION:
+      case TCGEN05_COLLECTOR_B2_USE_OPTION:
+      case TCGEN05_COLLECTOR_B2_LASTUSE_OPTION:
+      case TCGEN05_COLLECTOR_B3_DISCARD_OPTION:
+      case TCGEN05_COLLECTOR_B3_FILL_OPTION:
+      case TCGEN05_COLLECTOR_B3_USE_OPTION:
+      case TCGEN05_COLLECTOR_B3_LASTUSE_OPTION:
+      case TCGEN05_BLOCK_SCALE_OPTION:
+      case TCGEN05_BLOCK32_OPTION:
+      case TCGEN05_SCALE_VEC_1X_OPTION:
+      case TCGEN05_SCALE_VEC_2X_OPTION:
+      case TCGEN05_SCALE_VEC_4X_OPTION:
+      case TCGEN05_BLOCK16_OPTION:
       case TCGEN05_CTA_GROUP_1_OPTION:
       case TCGEN05_CTA_GROUP_2_OPTION:
       case TCGEN05_KIND_F16_OPTION:
@@ -1826,7 +1911,7 @@ ptx_instruction::ptx_instruction(
 
   m_space_spec = space_spec;
   m_space_spec2 = space_spec2;
-  if ((opcode == ST_OP || opcode == LD_OP || opcode == LDU_OP) &&
+  if ((opcode == ST_OP || opcode == ST_BULK_OP || opcode == LD_OP || opcode == LDU_OP) &&
       (space_spec == undefined_space)) {
     m_space_spec = generic_space;
   }

@@ -1,3 +1,4 @@
+#include "../../matrix_byte_layout.h"
 #include "internal.h"
 
 #include <algorithm>
@@ -11,6 +12,47 @@ namespace functional_detail {
 namespace {
 
 // PTX ISA 9.7.14-9.7.15: matrix fragment movement and MMA.
+
+step_result execute_stsm_mt168(const instruction &inst, warp_state &state,
+                               execution_context &context) {
+  const unsigned count = inst.opcode == "STSM.8.MT168.4"   ? 4
+                         : inst.opcode == "STSM.8.MT168.2" ? 2
+                                                           : 1;
+  const auto *address = get_operand(inst, 0, operand_kind::kMemoryAddress);
+  const auto *data = get_operand(inst, 1, operand_kind::kRegister);
+  if (!has_typed_operands(inst, 2) || !address || address->has_prefix ||
+      !data || data->negated ||
+      (data->index > kZeroRegister - count &&
+       !(count == 1 && data->index == kZeroRegister)) ||
+      state.active_mask != 0xffffffffu || !context.memory)
+    return unsupported(
+        inst, "MT168 requires a full warp, shared address and register tuple");
+  for (unsigned lane = 0; lane < 32; ++lane)
+    if (!lane_executes(inst, state, lane))
+      return unsupported(inst, "MT168 requires converged predication");
+  std::array<uint64_t, 32> bases{};
+  for (unsigned lane = 0; lane < count * 8; ++lane)
+    if (!evaluate_shared_address(*address, state, lane, bases[lane],
+                                 &context) ||
+        bases[lane] % 16 || bases[lane] > UINT64_MAX - 15)
+      return unsupported(inst, "invalid MT168 column address");
+  for (unsigned lane = 0; lane < 32; ++lane) {
+    for (unsigned matrix = 0; matrix < count; ++matrix) {
+      const auto packed = state.read_register(lane, data->index + matrix);
+      for (unsigned byte = 0; byte < 4; ++byte) {
+        const auto loc = stmatrix_m16n8_trans_byte(lane, byte, matrix);
+        const uint64_t target = bases[loc.address_lane] + loc.offset;
+        const uint8_t value = packed >> (8 * byte);
+        if (!context.memory->write(memory_space::kShared, target, &value, 1))
+          return memory_fault(inst, memory_space::kShared, target, 1);
+        context.record_memory_access(lane, memory_space::kShared, target, 1,
+                                     true);
+      }
+    }
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
 
 step_result execute_ldsm_stsm_m88(const instruction &inst, warp_state &state,
                                   execution_context &context) {
@@ -55,9 +97,9 @@ step_result execute_ldsm_stsm_m88(const instruction &inst, warp_state &state,
         uint64_t row0_address = 0;
         uint64_t row1_address = 0;
         if (!evaluate_shared_address(*address, state, matrix * 8 + row0,
-                                     row0_address) ||
+                                     row0_address, &context) ||
             !evaluate_shared_address(*address, state, matrix * 8 + row1,
-                                     row1_address) ||
+                                     row1_address, &context) ||
             row0_address > std::numeric_limits<uint64_t>::max() -
                                column * sizeof(uint16_t) ||
             row1_address > std::numeric_limits<uint64_t>::max() -
@@ -87,8 +129,8 @@ step_result execute_ldsm_stsm_m88(const instruction &inst, warp_state &state,
       }
       const unsigned address_lane = matrix * 8 + matrix_row;
       uint64_t row_address = 0;
-      if (!evaluate_shared_address(*address, state, address_lane,
-                                   row_address) ||
+      if (!evaluate_shared_address(*address, state, address_lane, row_address,
+                                   &context) ||
           row_address > std::numeric_limits<uint64_t>::max() -
                             matrix_column * sizeof(uint16_t))
         return unsupported(inst, "invalid M88 shared-memory address");
@@ -449,6 +491,9 @@ step_result execute_imma_s8(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_mma_semantics(frontend &target) {
+  target.register_semantics("STSM.8.MT168", execute_stsm_mt168);
+  target.register_semantics("STSM.8.MT168.2", execute_stsm_mt168);
+  target.register_semantics("STSM.8.MT168.4", execute_stsm_mt168);
   target.register_semantics("LDSM.16.M88", execute_ldsm_stsm_m88);
   target.register_semantics("LDSM.16.M88.2", execute_ldsm_stsm_m88);
   target.register_semantics("LDSM.16.M88.4", execute_ldsm_stsm_m88);

@@ -13,6 +13,8 @@ void register_sm90_functional_semantics(frontend &target);
 // Installs the fail-closed SM120 functional ISA subset. Handlers validate
 // NVIDIA's complete mnemonic and typed operand form, so newly seen modifiers
 // or operand syntax cannot silently acquire approximate semantics.
+void register_sm100_functional_semantics(frontend &target);
+
 void register_sm120_functional_semantics(frontend &target);
 
 } // namespace sass

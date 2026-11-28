@@ -1,3 +1,6 @@
+#include "../../bit_scan.h"
+#include "../../funnel_shift.h"
+#include "../../ternary_logic.h"
 #include "../decode/operand_parser.h"
 #include "internal.h"
 
@@ -281,9 +284,21 @@ step_result execute_shf(const instruction &inst, warp_state &state,
         !read_u32_operand(shift, state, lane, shift_value) ||
         !read_u32_operand(inst.operands[3], state, lane, high))
       return false;
-    // These forms do not have .W: clamp the count at the operand width.
+    // Only .W wraps the shift count. Ordinary U32/U64 shifts clamp at
+    // their word width. Wrapping a 64-bit readiness bitmap's index at 32
+    // aliases its high bits onto low bits, and XOR notifications cancel.
     const unsigned amount = std::min(shift_value, 32u);
-    if (inst.opcode == "SHF.L.U32" || inst.opcode == "USHF.L.U32") {
+    if (inst.opcode == "SHF.R.W.U32") {
+      result = funnel_shift32(low, high, shift_value, false, true);
+    } else if (inst.opcode == "SHF.R.W.U32.HI") {
+      // Qualified compiler lowering of a wrapping scalar bit-test. Other
+      // source forms need a separate native probe before accepting them.
+      if (low != 0)
+        return false;
+      result = high >> (shift_value & 31u);
+    } else if (inst.opcode == "USHF.R.U32" || inst.opcode == "SHF.R.U32") {
+      result = funnel_shift32(low, high, shift_value, false, false);
+    } else if (inst.opcode == "SHF.L.U32" || inst.opcode == "USHF.L.U32") {
       result = amount == 32 ? 0 : low << amount;
     } else if (inst.opcode == "SHF.R.S32.HI" ||
                inst.opcode == "USHF.R.S32.HI") {
@@ -296,16 +311,27 @@ step_result execute_shf(const instruction &inst, warp_state &state,
       if (low != 0)
         return false;
       result = amount == 32 ? 0 : high >> amount;
-    } else if (inst.opcode == "SHF.R.U64") {
+    } else if (inst.opcode == "SHF.R.U64" || inst.opcode == "USHF.R.U64" ||
+               inst.opcode == "USHF.R.S64" || inst.opcode == "SHF.R.S64") {
       const uint64_t pair = (static_cast<uint64_t>(high) << 32) | low;
-      result =
-          shift_value >= 64 ? 0 : static_cast<uint32_t>(pair >> shift_value);
-    } else if (inst.opcode == "SHF.L.U64.HI" ||
+      const bool sign = inst.opcode.find(".S64") != std::string::npos;
+      if (sign)
+        result = static_cast<uint32_t>(static_cast<int64_t>(pair) >>
+                                       std::min(shift_value, 63u));
+      else
+        result =
+            shift_value >= 64 ? 0 : static_cast<uint32_t>(pair >> shift_value);
+    } else if (inst.opcode == "SHF.L.W.U32.HI" ||
+               inst.opcode == "SHF.L.U32.HI" || inst.opcode == "SHF.L.U64.HI" ||
                inst.opcode == "USHF.L.U64.HI") {
       const uint64_t pair = (static_cast<uint64_t>(high) << 32) | low;
-      result = shift_value >= 64
+      const unsigned left_amount =
+          inst.opcode == "SHF.L.W.U32.HI" ? shift_value & 31u
+          : inst.opcode == "SHF.L.U32.HI" ? amount
+                                          : std::min(shift_value, 64u);
+      result = left_amount == 64
                    ? 0
-                   : static_cast<uint32_t>((pair << shift_value) >> 32);
+                   : static_cast<uint32_t>((pair << left_amount) >> 32);
     } else {
       return false;
     }
@@ -336,6 +362,7 @@ step_result execute_shf(const instruction &inst, warp_state &state,
 
 step_result execute_lop3(const instruction &inst, warp_state &state,
                          execution_context &) {
+  const bool predicate_and = inst.opcode == "LOP3.LUT.PAND";
   const bool uniform = inst.opcode == "ULOP3.LUT";
   const bool predicate_output = inst.operands.size() == 7;
   const size_t expected = predicate_output ? 7 : 6;
@@ -360,7 +387,9 @@ step_result execute_lop3(const instruction &inst, warp_state &state,
       uniform ? operand_kind::kUniformPredicate : operand_kind::kPredicate);
   if (destination == nullptr || lut == nullptr || predicate == nullptr ||
       (predicate_output && output_predicate == nullptr) ||
-      predicate->index != kTruePredicate || !predicate->negated ||
+      (predicate_and && !predicate_output) ||
+      (!predicate_output &&
+       (predicate->index != kTruePredicate || !predicate->negated)) ||
       lut->immediate < 0 || lut->immediate > 0xff ||
       (uniform &&
        (inst.operands[first_source].kind == operand_kind::kRegister ||
@@ -377,12 +406,7 @@ step_result execute_lop3(const instruction &inst, warp_state &state,
         !read_u32_operand(inst.operands[first_source + 1], state, lane, bv) ||
         !read_u32_operand(inst.operands[first_source + 2], state, lane, cv))
       return false;
-    value = 0;
-    for (unsigned bit = 0; bit < 32; ++bit) {
-      const unsigned index = (((av >> bit) & 1u) << 2) |
-                             (((bv >> bit) & 1u) << 1) | ((cv >> bit) & 1u);
-      value |= ((static_cast<uint64_t>(lut->immediate) >> index) & 1u) << bit;
-    }
+    value = ternary_logic(av, bv, cv, static_cast<uint8_t>(lut->immediate));
     return true;
   };
   if (uniform) {
@@ -391,8 +415,14 @@ step_result execute_lop3(const instruction &inst, warp_state &state,
       if (!compute(0, value))
         return unsupported(inst, "unsupported ULOP3.LUT source");
       state.write_uniform_register(destination->index, value);
-      if (predicate_output)
-        state.write_uniform_predicate(output_predicate->index, value != 0);
+      if (predicate_output) {
+        bool input = false;
+        if (!read_predicate_operand(*predicate, state, 0, input))
+          return unsupported(inst, "invalid ULOP3 predicate input");
+        state.write_uniform_predicate(
+            output_predicate->index,
+            ternary_logic_predicate(value, input, false));
+      }
     }
   } else {
     for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
@@ -403,8 +433,14 @@ step_result execute_lop3(const instruction &inst, warp_state &state,
       if (!compute(lane, value))
         return unsupported(inst, "unsupported LOP3.LUT source");
       state.write_register(lane, destination->index, value);
-      if (predicate_output)
-        state.write_predicate(lane, output_predicate->index, value != 0);
+      if (predicate_output) {
+        bool input = false;
+        if (!read_predicate_operand(*predicate, state, lane, input))
+          return unsupported(inst, "invalid LOP3 predicate input");
+        state.write_predicate(
+            lane, output_predicate->index,
+            ternary_logic_predicate(value, input, predicate_and));
+      }
     }
   }
   advance(inst, state);
@@ -660,8 +696,10 @@ step_result execute_iabs(const instruction &inst, warp_state &state,
 
 step_result execute_popc(const instruction &inst, warp_state &state,
                          execution_context &) {
+  const bool uniform = inst.opcode == "UBREV";
   if (!has_typed_operands(inst, 2) ||
-      inst.operands[0].kind != operand_kind::kRegister)
+      inst.operands[0].kind !=
+          (uniform ? operand_kind::kUniformRegister : operand_kind::kRegister))
     return unsupported(inst, "unsupported POPC operand form");
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if ((state.active_mask & (1u << lane)) == 0 ||
@@ -670,8 +708,17 @@ step_result execute_popc(const instruction &inst, warp_state &state,
     uint32_t source = 0;
     if (!read_u32_operand(inst.operands[1], state, lane, source))
       return unsupported(inst, "unsupported POPC source");
-    state.write_register(lane, inst.operands[0].index,
-                         static_cast<uint32_t>(__builtin_popcount(source)));
+    uint32_t result = 0;
+    if (inst.opcode == "BREV" || uniform) {
+      for (unsigned bit = 0; bit < 32; ++bit)
+        result |= ((source >> bit) & 1u) << (31 - bit);
+    } else
+      result = static_cast<uint32_t>(__builtin_popcount(source));
+    if (uniform) {
+      state.write_uniform_register(inst.operands[0].index, result);
+      break;
+    }
+    state.write_register(lane, inst.operands[0].index, result);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -679,15 +726,18 @@ step_result execute_popc(const instruction &inst, warp_state &state,
 
 step_result execute_flo(const instruction &inst, warp_state &state,
                         execution_context &) {
-  const bool uniform = inst.opcode == "UFLO.U32";
+  const bool uniform = inst.opcode == "UFLO" || inst.opcode == "UFLO.SH" ||
+                       inst.opcode == "UFLO.U32" ||
+                       inst.opcode == "UFLO.U32.SH";
   if (!has_typed_operands(inst, 2) ||
       (uniform && inst.operands[0].kind != operand_kind::kUniformRegister) ||
       (!uniform && inst.operands[0].kind != operand_kind::kRegister) ||
       (uniform && inst.has_guard))
     return unsupported(inst, "unsupported FLO.U32 operand form");
-  const auto find_leading_one = [](uint32_t source) {
-    return source == 0 ? 0xffffffffu
-                       : 31u - static_cast<uint32_t>(__builtin_clz(source));
+  const auto find_leading_one = [&](uint32_t source) {
+    return flash_gpgpu_sim::find_non_sign_bit(
+        source, 32, inst.opcode.find(".U32") == std::string::npos,
+        inst.opcode.find(".SH") != std::string::npos);
   };
   if (uniform) {
     uint32_t source = 0;
@@ -755,11 +805,9 @@ step_result execute_isetp(const instruction &inst, warp_state &state,
   const bool combine_or = inst.opcode.find(".OR") != std::string::npos;
   const bool combine_xor = inst.opcode.find(".XOR") != std::string::npos;
   if (destination == nullptr || second_destination == nullptr ||
-      second_destination->index != kTruePredicate ||
       (!combine_and && !combine_or && !combine_xor))
-    return unsupported(
-        inst, "only ISETP AND/OR/XOR with a discarded second output is "
-              "implemented");
+    return unsupported(inst, "ISETP AND/OR/XOR operand form is "
+                             "implemented");
   const bool signed_wide = inst.opcode.find(".S64.") != std::string::npos;
   const bool wide_compare =
       signed_wide || inst.opcode.find(".U64.") != std::string::npos;
@@ -842,6 +890,10 @@ step_result execute_isetp(const instruction &inst, warp_state &state,
                         : combine_or ? compared || input
                                      : compared && input;
     state.write_predicate(lane, destination->index, result);
+    state.write_predicate(lane, second_destination->index,
+                          combine_xor  ? (!compared != input)
+                          : combine_or ? (!compared || input)
+                                       : (!compared && input));
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -869,12 +921,13 @@ step_result execute_uisetp(const instruction &inst, warp_state &state,
   const bool unsigned_compare =
       wide_compare || inst.opcode.find(".U32.") != std::string::npos;
   const bool combine_or = inst.opcode.find(".OR") != std::string::npos;
+  const bool combine_xor = inst.opcode.find(".XOR") != std::string::npos;
   const bool extended = inst.opcode.find(".EX") != std::string::npos;
   if (!has_typed_operands(inst, extended ? 6 : 5) ||
       inst.operands[0].kind != operand_kind::kUniformPredicate ||
       inst.operands[1].kind != operand_kind::kUniformPredicate ||
-      inst.operands[1].index != kTruePredicate ||
-      (inst.opcode.find(".AND") == std::string::npos && !combine_or) ||
+      (inst.opcode.find(".AND") == std::string::npos && !combine_or &&
+       !combine_xor) ||
       (inst.has_guard && inst.guard.kind != operand_kind::kUniformPredicate))
     return unsupported(inst, "unsupported UISETP operand form");
   if (any_lane_executes(inst, state)) {
@@ -925,8 +978,13 @@ step_result execute_uisetp(const instruction &inst, warp_state &state,
         !extend_comparison(inst, a, b, unsigned_compare, extension, compared))
       return unsupported(inst, "unsupported extended UISETP comparison");
     state.write_uniform_predicate(inst.operands[0].index,
-                                  combine_or ? compared || input
-                                             : compared && input);
+                                  combine_xor  ? compared != input
+                                  : combine_or ? compared || input
+                                               : compared && input);
+    state.write_uniform_predicate(inst.operands[1].index,
+                                  combine_xor  ? (!compared != input)
+                                  : combine_or ? (!compared || input)
+                                               : (!compared && input));
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -938,6 +996,8 @@ step_result execute_lea(const instruction &inst, warp_state &state,
       inst.opcode == "LEA.HI.X.SX32" || inst.opcode == "ULEA.HI.X.SX32";
   const bool high_carry = inst.opcode == "LEA.HI.X" || signed_high_carry;
   const bool uniform_high = inst.opcode == "ULEA.HI";
+  const bool uniform_high_output = uniform_high && inst.operands.size() == 6;
+  const bool high_output = inst.opcode == "LEA.HI" && inst.operands.size() == 6;
   const bool high = inst.opcode == "LEA.HI" || uniform_high || high_carry;
   const bool sx32 = inst.opcode == "LEA.HI.SX32" ||
                     inst.opcode == "ULEA.HI.SX32" || signed_high_carry;
@@ -947,7 +1007,8 @@ step_result execute_lea(const instruction &inst, warp_state &state,
   const bool uniform_carry_output =
       inst.opcode == "ULEA" && inst.operands.size() == 5;
   const bool carry_output = inst.opcode == "LEA" && inst.operands.size() == 5;
-  const size_t expected = signed_high_carry                        ? 5
+  const size_t expected = (uniform_high_output || high_output)     ? 6
+                          : signed_high_carry                      ? 5
                           : (uniform_high_carry || high_carry)     ? 6
                           : (uniform_carry_output || carry_output) ? 5
                           : high                                   ? 5
@@ -957,7 +1018,10 @@ step_result execute_lea(const instruction &inst, warp_state &state,
   if ((uniform && inst.operands[0].kind != operand_kind::kUniformRegister) ||
       (!uniform && inst.operands[0].kind != operand_kind::kRegister))
     return unsupported(inst, "unsupported LEA destination");
-  const size_t first_source = (uniform_carry_output || carry_output) ? 2 : 1;
+  const size_t first_source = (uniform_carry_output || carry_output ||
+                               uniform_high_output || high_output)
+                                  ? 2
+                                  : 1;
   if (uniform &&
       (inst.operands[first_source].kind == operand_kind::kRegister ||
        inst.operands[first_source + 1].kind == operand_kind::kRegister))
@@ -994,18 +1058,14 @@ step_result execute_lea(const instruction &inst, warp_state &state,
       result = carry_fragment + b + c + static_cast<uint32_t>(carry);
     } else if (high) {
       uint32_t c = 0;
-      if (!read_u32_operand(inst.operands[3], state, lane, c))
+      if (!read_u32_operand(inst.operands[first_source + 2], state, lane, c))
         return false;
-      // LEA.HI adds the carry fragment selected from the first source to
-      // the second and third sources.  Triton's signed power-of-two cdiv
-      // lowering exposes the mapping directly:
-      //   sign = value >> 31
-      //   bias = sign >> (32 - shift)
-      //   adjusted = value + bias
-      // becomes
-      //   LEA.HI adjusted, sign, value, RZ, shift
+      // The first/third sources are the low/high words of a funnel shift;
+      // the second source is added after selecting the shifted high word.
+      // ptxas fuses shf.l.wrap(a,c,amount)+b into this form. In particular,
+      // LEA.HI r,0,127,groups,7 computes groups*128+127, not groups+127.
       const uint32_t carry_fragment = amount == 0 ? 0 : a >> (32 - amount);
-      result = carry_fragment + b + c;
+      result = (carry_fragment | (c << amount)) + b;
     } else if (sx32) {
       const unsigned right = 32 - amount;
       // Widen before shifting: shift=0 selects the sign-extension word,
@@ -1023,6 +1083,21 @@ step_result execute_lea(const instruction &inst, warp_state &state,
       uint32_t result = 0;
       if (!compute(0, result))
         return unsupported(inst, "unsupported ULEA operand form");
+      if (uniform_high_output) {
+        const operand *carry =
+            get_operand(inst, 1, operand_kind::kUniformPredicate);
+        uint32_t a = 0, b = 0, c = 0;
+        if (carry == nullptr ||
+            !read_u32_operand(inst.operands[2], state, 0, a) ||
+            !read_u32_operand(inst.operands[3], state, 0, b) ||
+            !read_u32_operand(inst.operands[4], state, 0, c))
+          return unsupported(inst, "unsupported ULEA.HI carry output");
+        const unsigned amount = static_cast<unsigned>(shift->immediate);
+        const uint32_t shifted =
+            (amount ? a >> (32 - amount) : 0) | (c << amount);
+        const uint64_t sum = uint64_t(shifted) + b;
+        state.write_uniform_predicate(carry->index, (sum >> 32) != 0);
+      }
       if (uniform_carry_output) {
         const operand *carry =
             get_operand(inst, 1, operand_kind::kUniformPredicate);
@@ -1052,6 +1127,20 @@ step_result execute_lea(const instruction &inst, warp_state &state,
       uint32_t result = 0;
       if (!compute(lane, result))
         return unsupported(inst, "unsupported LEA operand form");
+      if (high_output) {
+        const operand *carry = get_operand(inst, 1, operand_kind::kPredicate);
+        uint32_t a = 0, b = 0, c = 0;
+        if (carry == nullptr ||
+            !read_u32_operand(inst.operands[2], state, lane, a) ||
+            !read_u32_operand(inst.operands[3], state, lane, b) ||
+            !read_u32_operand(inst.operands[4], state, lane, c))
+          return unsupported(inst, "unsupported LEA.HI carry output");
+        const unsigned amount = static_cast<unsigned>(shift->immediate);
+        const uint32_t shifted =
+            (amount ? a >> (32 - amount) : 0) | (c << amount);
+        const uint64_t sum = uint64_t(shifted) + b;
+        state.write_predicate(lane, carry->index, (sum >> 32) != 0);
+      }
       if (carry_output) {
         const operand *carry = get_operand(inst, 1, operand_kind::kPredicate);
         uint32_t a = 0;
@@ -1124,8 +1213,46 @@ step_result execute_gxt(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
+step_result execute_vimnmx3(const instruction &inst, warp_state &state,
+                            execution_context &) {
+  if (!has_typed_operands(inst, 5) ||
+      inst.operands[0].kind != operand_kind::kRegister)
+    return unsupported(inst, "unsupported unsigned three-input min/max");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    uint32_t a, b, c;
+    bool minimum;
+    if (!read_u32_operand(inst.operands[1], state, lane, a) ||
+        !read_u32_operand(inst.operands[2], state, lane, b) ||
+        !read_u32_operand(inst.operands[3], state, lane, c) ||
+        !read_predicate_operand(inst.operands[4], state, lane, minimum))
+      return unsupported(inst, "unsupported min/max source");
+    state.write_register(lane, inst.operands[0].index,
+                         minimum ? std::min({a, b, c}) : std::max({a, b, c}));
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
 step_result execute_vimnmx(const instruction &inst, warp_state &state,
                            execution_context &) {
+  if (inst.operands.size() == 6 &&
+      (inst.opcode == "VIMNMX.U32" || inst.opcode == "VIMNMX" ||
+       inst.opcode == "VIMNMX.S32")) {
+    if (inst.operands[1].kind != operand_kind::kPredicate ||
+        inst.operands[2].kind != operand_kind::kPredicate ||
+        inst.operands[1].index != kTruePredicate ||
+        inst.operands[2].index != kTruePredicate)
+      return unsupported(
+          inst, "only discarded VIMNMX predicate outputs are qualified");
+    instruction scalar = inst;
+    scalar.operands.erase(scalar.operands.begin() + 1,
+                          scalar.operands.begin() + 3);
+    execution_context unused;
+    return execute_vimnmx(scalar, state, unused);
+  }
   const bool uniform = inst.opcode.rfind("UVIMNMX.", 0) == 0;
   if (!has_typed_operands(inst, 4) ||
       (uniform && inst.operands[0].kind != operand_kind::kUniformRegister) ||
@@ -1227,8 +1354,9 @@ step_result execute_p2r(const instruction &inst, warp_state &state,
       continue;
     uint32_t value = state.read_register(lane, inst.operands[1].index);
     for (unsigned predicate = 0; predicate < 7; ++predicate) {
-      const uint32_t bit = 1u << predicate;
-      if ((mask & bit) == 0)
+      const uint32_t bit = 1u
+                           << (predicate + (inst.opcode == "P2R.B1" ? 8 : 0));
+      if ((mask & (1u << predicate)) == 0)
         continue;
       if (state.read_predicate(lane, predicate))
         value |= bit;
@@ -1331,6 +1459,15 @@ step_result execute_sel(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_integer_semantics(frontend &target) {
+  for (const std::string base : {"ISETP", "UISETP"})
+    for (const std::string cmp : {"EQ", "NE", "LT", "LE", "GT", "GE"})
+      for (const std::string type : {"", ".U32"})
+        for (const std::string combine : {"AND", "OR", "XOR"})
+          for (const std::string extended : {"", ".EX"})
+            target.register_semantics(
+                base + "." + cmp + type + "." + combine + extended,
+                base == "ISETP" ? execute_isetp : execute_uisetp);
+
   target.register_semantics("IADD", execute_iadd);
   target.register_semantics("VIADD", execute_iadd);
   target.register_semantics("IADD3", execute_iadd3);
@@ -1340,15 +1477,25 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("UIADD3.64", execute_uiadd3);
   target.register_semantics("UIADD3.X", execute_uiadd3x);
   target.register_semantics("SHF.L.U32", execute_shf);
+  target.register_semantics("SHF.R.U32", execute_shf);
+  target.register_semantics("SHF.R.W.U32", execute_shf);
+  target.register_semantics("SHF.R.W.U32.HI", execute_shf);
+  target.register_semantics("SHF.L.W.U32.HI", execute_shf);
   target.register_semantics("SHF.R.S32.HI", execute_shf);
   target.register_semantics("SHF.R.U32.HI", execute_shf);
   target.register_semantics("SHF.R.U64", execute_shf);
+  target.register_semantics("SHF.R.S64", execute_shf);
   target.register_semantics("SHF.L.U64.HI", execute_shf);
+  target.register_semantics("SHF.L.U32.HI", execute_shf);
   target.register_semantics("USHF.L.U32", execute_shf);
+  target.register_semantics("USHF.R.U32", execute_shf);
   target.register_semantics("USHF.R.U32.HI", execute_shf);
   target.register_semantics("USHF.R.S32.HI", execute_shf);
+  target.register_semantics("USHF.R.S64", execute_shf);
+  target.register_semantics("USHF.R.U64", execute_shf);
   target.register_semantics("USHF.L.U64.HI", execute_shf);
   target.register_semantics("LOP3.LUT", execute_lop3);
+  target.register_semantics("LOP3.LUT.PAND", execute_lop3);
   target.register_semantics("ULOP3.LUT", execute_lop3);
   target.register_semantics("PLOP3.LUT", execute_plop3);
   target.register_semantics("UPLOP3.LUT", execute_plop3);
@@ -1357,70 +1504,39 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("IMAD", execute_imad);
   target.register_semantics("IMAD.X", execute_imad);
   target.register_semantics("IMAD.IADD", execute_imad);
+  target.register_semantics("IMAD.IADD.U32", execute_imad);
   target.register_semantics("IMAD.MOV", execute_imad);
   target.register_semantics("IMAD.MOV.U32", execute_imad);
   target.register_semantics("IMAD.U32", execute_imad);
   target.register_semantics("IMAD.SHL.U32", execute_imad);
+  target.register_semantics("IMAD.SHL", execute_imad);
   target.register_semantics("IMAD.HI", execute_imad);
   target.register_semantics("IMAD.HI.U32", execute_imad);
   target.register_semantics("IMAD.WIDE", execute_imad);
   target.register_semantics("IMAD.WIDE.U32", execute_imad);
   target.register_semantics("UIMAD", execute_uimad);
+  target.register_semantics("UIMAD.U32", execute_uimad);
   target.register_semantics("UIMAD.HI.U32", execute_uimad);
   target.register_semantics("UIMAD.WIDE", execute_uimad);
   target.register_semantics("UIMAD.WIDE.U32", execute_uimad);
   target.register_semantics("IABS", execute_iabs);
   target.register_semantics("POPC", execute_popc);
+  target.register_semantics("BREV", execute_popc);
+  target.register_semantics("UBREV", execute_popc);
+  target.register_semantics("FLO", execute_flo);
+  target.register_semantics("FLO.SH", execute_flo);
+  target.register_semantics("UFLO", execute_flo);
+  target.register_semantics("UFLO.SH", execute_flo);
   target.register_semantics("FLO.U32", execute_flo);
+  target.register_semantics("FLO.U32.SH", execute_flo);
   target.register_semantics("UFLO.U32", execute_flo);
-  target.register_semantics("ISETP.EQ.AND", execute_isetp);
-  target.register_semantics("ISETP.EQ.OR", execute_isetp);
-  target.register_semantics("ISETP.EQ.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.EQ.U32.OR", execute_isetp);
-  target.register_semantics("ISETP.NE.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.NE.AND", execute_isetp);
-  target.register_semantics("ISETP.NE.XOR", execute_isetp);
-  target.register_semantics("ISETP.NE.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.NE.U32.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.EQ.OR.EX", execute_isetp);
+  target.register_semantics("UFLO.U32.SH", execute_flo);
   target.register_semantics("ISETP.EQ.U64.AND", execute_isetp);
   target.register_semantics("ISETP.EQ.U64.OR", execute_isetp);
-  target.register_semantics("ISETP.GE.S64.AND", execute_isetp);
   target.register_semantics("ISETP.NE.U64.AND", execute_isetp);
   target.register_semantics("ISETP.GE.U64.AND", execute_isetp);
-  target.register_semantics("ISETP.LT.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.LT.AND", execute_isetp);
-  target.register_semantics("ISETP.LE.AND", execute_isetp);
-  target.register_semantics("ISETP.GT.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.GT.U32.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.GT.AND", execute_isetp);
-  target.register_semantics("ISETP.GE.U32.AND", execute_isetp);
-  target.register_semantics("ISETP.GE.U32.AND.EX", execute_isetp);
-  target.register_semantics("ISETP.GE.AND", execute_isetp);
-  target.register_semantics("ISETP.GE.OR", execute_isetp);
-  target.register_semantics("ISETP.GT.OR", execute_isetp);
-  target.register_semantics("ISETP.LT.OR", execute_isetp);
-  target.register_semantics("ISETP.LT.U32.OR.EX", execute_isetp);
-  target.register_semantics("ISETP.NE.OR", execute_isetp);
-  target.register_semantics("ISETP.GT.U32.OR", execute_isetp);
-  target.register_semantics("ISETP.NE.U32.OR", execute_isetp);
-  target.register_semantics("UISETP.NE.U32.AND", execute_uisetp);
+  target.register_semantics("ISETP.GE.S64.AND", execute_isetp);
   target.register_semantics("UISETP.NE.U64.AND", execute_uisetp);
-  target.register_semantics("UISETP.NE.AND", execute_uisetp);
-  target.register_semantics("UISETP.NE.AND.EX", execute_uisetp);
-  target.register_semantics("UISETP.EQ.OR.EX", execute_uisetp);
-  target.register_semantics("UISETP.NE.OR", execute_uisetp);
-  target.register_semantics("UISETP.NE.U32.OR", execute_uisetp);
-  target.register_semantics("UISETP.EQ.AND", execute_uisetp);
-  target.register_semantics("UISETP.EQ.U32.AND", execute_uisetp);
-  target.register_semantics("UISETP.EQ.U32.OR", execute_uisetp);
-  target.register_semantics("UISETP.LT.AND", execute_uisetp);
-  target.register_semantics("UISETP.GT.U32.AND", execute_uisetp);
-  target.register_semantics("UISETP.GT.U32.OR", execute_uisetp);
-  target.register_semantics("UISETP.GT.AND", execute_uisetp);
-  target.register_semantics("UISETP.GE.AND", execute_uisetp);
-  target.register_semantics("UISETP.GE.AND.EX", execute_uisetp);
-  target.register_semantics("UISETP.GE.U32.AND", execute_uisetp);
   target.register_semantics("UISETP.GE.U64.AND", execute_uisetp);
   target.register_semantics("LEA", execute_lea);
   target.register_semantics("LEA.HI", execute_lea);
@@ -1436,6 +1552,7 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("USGXT.U32", execute_gxt);
   target.register_semantics("SGXT", execute_gxt);
   target.register_semantics("USGXT", execute_gxt);
+  target.register_semantics("VIMNMX3.U32", execute_vimnmx3);
   target.register_semantics("VIMNMX", execute_vimnmx);
   target.register_semantics("VIMNMX.S32", execute_vimnmx);
   target.register_semantics("VIMNMX.U32", execute_vimnmx);
@@ -1445,6 +1562,7 @@ void register_integer_semantics(frontend &target) {
   target.register_semantics("VIADDMNMX.S32", execute_viaddmnmx);
   target.register_semantics("VIADDMNMX.U32", execute_viaddmnmx);
   target.register_semantics("P2R", execute_p2r);
+  target.register_semantics("P2R.B1", execute_p2r);
   target.register_semantics("R2P", execute_r2p);
   target.register_semantics("SEL", execute_sel);
   target.register_semantics("SEL.64", execute_sel);

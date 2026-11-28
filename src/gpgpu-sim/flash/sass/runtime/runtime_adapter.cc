@@ -64,6 +64,8 @@ uint64_t minimum_launch_header(architecture arch) {
   switch (arch) {
   case architecture::kSm90:
     return kSm90MinimumLaunchHeader;
+  case architecture::kSm100:
+  case architecture::kSm103:
   case architecture::kSm120:
     return kSm120MinimumLaunchHeader;
   case architecture::kUnknown:
@@ -80,8 +82,11 @@ public:
       const std::vector<kernel_constant_bank> &constant_banks)
       : parameter_memory_(launch.get_param_memory()),
         global_memory_(global_memory), parameter_base_(parameter_base),
-        indirect_parameter_size_(arch == architecture::kSm90 ? parameter_size
-                                                             : 0),
+        indirect_parameter_size_((arch == architecture::kSm90 ||
+                                  arch == architecture::kSm100 ||
+                                  arch == architecture::kSm103)
+                                     ? parameter_size
+                                     : 0),
         constant_header_(parameter_base),
         // These are hash bucket counts, not byte capacities. Grow on demand.
         shared_memory_("sass_shared", 32), local_memory_("sass_local", 32) {
@@ -117,6 +122,10 @@ public:
       store_constant(constant_header_, 0x198, kSm90IndirectParameterBase);
       store_constant(constant_header_, 0x208, descriptor_base);
     } else {
+      // SM100/103 by-value tensor maps use the same parameter backing as
+      // constant loads, reached through this launch-header pointer.
+      if (arch == architecture::kSm100 || arch == architecture::kSm103)
+        store_constant(constant_header_, 0x348, kSm90IndirectParameterBase);
       store_constant(constant_header_, 0x358, descriptor_base);
       store_constant(constant_header_, 0x360, block.x);
       store_constant(constant_header_, 0x364, block.y);
@@ -154,6 +163,8 @@ public:
       global_memory_->read(address, bytes, data);
       return true;
     case sass::memory_space::kShared:
+      if (!local_shared_offset(address, bytes))
+        return false;
       shared_memory_.read(address, bytes, data);
       return true;
     case sass::memory_space::kLocal:
@@ -176,6 +187,8 @@ public:
       global_memory_->write(address, bytes, data, nullptr, nullptr);
       return true;
     case sass::memory_space::kShared:
+      if (!local_shared_offset(address, bytes))
+        return false;
       shared_memory_.write(address, bytes, data, nullptr, nullptr);
       return true;
     case sass::memory_space::kLocal:
@@ -199,7 +212,24 @@ public:
     return true;
   }
 
+  void set_native_cluster_rank(unsigned rank, architecture arch) {
+    native_rank_ = rank;
+    if (arch == architecture::kSm100 || arch == architecture::kSm103)
+      store_constant(constant_header_, 0x36c, uint32_t{1});
+  }
+  ::memory_space *shared_backing() { return &shared_memory_; }
+
 private:
+  unsigned native_rank_ = UINT32_MAX;
+  bool local_shared_offset(uint64_t &address, size_t bytes) const {
+    if (native_rank_ == UINT32_MAX)
+      return true;
+    const unsigned owner = address >> 24;
+    if (owner && owner != native_rank_)
+      return false;
+    address &= 0xffffff;
+    return bytes <= 0x1000000 - address;
+  }
   bool is_indirect_parameter_access(uint64_t address, size_t bytes) const {
     if (indirect_parameter_size_ == 0 || address < kSm90IndirectParameterBase)
       return false;
@@ -633,16 +663,28 @@ load_runtime_kernel_resources(const std::string &sassir_path,
   if (!image.has_resources)
     panic("SASS sassir has no kernel resource metadata");
   return {image.resources.registers, image.resources.static_shared,
-          image.resources.local_memory, image.resources.stack_size};
+          image.resources.local_memory, image.resources.stack_size,
+          image.required_cluster};
 }
 
 std::unique_ptr<functional_memory> make_runtime_functional_memory(
     kernel_info_t &launch, ::memory_space *global_memory, architecture arch,
     uint32_t parameter_base, uint32_t parameter_size,
-    const std::vector<kernel_constant_bank> &constant_banks) {
-  return std::make_unique<simulator_functional_memory>(
+    const std::vector<kernel_constant_bank> &constant_banks,
+    unsigned native_cluster_rank) {
+  auto memory = std::make_unique<simulator_functional_memory>(
       launch, global_memory, arch, parameter_base, parameter_size,
       constant_banks);
+  if (native_cluster_rank != UINT32_MAX)
+    memory->set_native_cluster_rank(native_cluster_rank, arch);
+  return memory;
+}
+
+::memory_space *runtime_shared_memory(functional_memory &memory) {
+  auto *runtime = dynamic_cast<simulator_functional_memory *>(&memory);
+  if (!runtime)
+    panic("native timing requires runtime shared memory backing");
+  return runtime->shared_backing();
 }
 
 functional_grid_summary
@@ -668,6 +710,9 @@ execute_runtime_functional_grid(kernel_info_t &launch,
     panic("SASS runtime kernel has no parameter bank");
   if (image->arch == architecture::kSm90)
     register_sm90_functional_semantics(sass_frontend);
+  else if (image->arch == architecture::kSm100 ||
+           image->arch == architecture::kSm103)
+    register_sm100_functional_semantics(sass_frontend);
   else
     register_sm120_functional_semantics(sass_frontend);
 

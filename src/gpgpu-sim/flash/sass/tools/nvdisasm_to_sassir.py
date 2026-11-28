@@ -50,7 +50,7 @@ class KernelConstantBank(NamedTuple):
     data: bytes
 
 
-PARAMETER_BASE = {"sm90": 0x210, "sm120": 0x380}
+PARAMETER_BASE = {"sm90": 0x210, "sm100": 0x380, "sm103": 0x380, "sm120": 0x380}
 SHT_NOBITS = 8
 
 
@@ -305,7 +305,7 @@ def parse_kernel_resources(resource_dump: str, kernel_name: str) -> KernelResour
     )
 
 
-def parse_kernel_abi(elf_dump: str, kernel_name: str, arch: str) -> KernelAbi:
+def kernel_info_section(elf_dump: str, kernel_name: str) -> str:
     section_name = f".nv.info.{kernel_name}"
     heading = re.search(
         rf"^{re.escape(section_name)}\s*$", elf_dump, flags=re.MULTILINE
@@ -317,6 +317,28 @@ def parse_kernel_abi(elf_dump: str, kernel_name: str, arch: str) -> KernelAbi:
     if next_section is not None:
         section = section[: next_section.start()]
 
+    return section
+
+
+def parse_required_cluster(elf_dump: str, kernel_name: str):
+    section = kernel_info_section(elf_dump, kernel_name)
+    if "EIATTR_EXPLICIT_CLUSTER" not in section:
+        return None
+    matches = re.findall(
+        r"EIATTR_CTA_PER_CLUSTER\s+Format:\s+EIFMT_SVAL\s+Value:\s*"
+        r"(0x[0-9a-fA-F]+|\d+)\s+(0x[0-9a-fA-F]+|\d+)\s+(0x[0-9a-fA-F]+|\d+)", section)
+    if len(matches) != 1:
+        raise RuntimeError("explicit cluster kernel needs exactly one dimension record")
+    dims = tuple(int(v, 0) for v in matches[0])
+    if any(v <= 0 or v > 0xffffffff for v in dims):
+        raise RuntimeError("required cluster dimensions must be positive uint32 values")
+    if dims[0] * dims[1] * dims[2] > 0xffffffff:
+        raise RuntimeError("required cluster rank count overflows uint32")
+    return dims
+
+
+def parse_kernel_abi(elf_dump: str, kernel_name: str, arch: str) -> KernelAbi:
+    section = kernel_info_section(elf_dump, kernel_name)
     parameters = [
         KernelParameter(*(int(value, 0) for value in match.groups()))
         for match in re.finditer(
@@ -447,9 +469,9 @@ def export_kernel(
 ) -> tuple[int, int]:
     section = find_kernel_section(sections, kernel_name)
     raw = list(raw_instructions(raw_data, section))
-    abi = parse_kernel_abi(
-        run_cuobjdump(cuobjdump, cubin, "-elf", "-fun", kernel_name), kernel_name, arch
-    )
+    elf_dump = run_cuobjdump(cuobjdump, cubin, "-elf", "-fun", kernel_name)
+    abi = parse_kernel_abi(elf_dump, kernel_name, arch)
+    required_cluster = parse_required_cluster(elf_dump, kernel_name)
     resources = parse_kernel_resources(resource_dump, kernel_name)
     functions = find_json_function_sequence(document, kernel_name)
     function = functions[0]
@@ -509,6 +531,8 @@ def export_kernel(
         resources.local_memory,
         resources.stack_size,
     )
+    if required_cluster is not None:
+        write_record(output, "CLUSTERDIMS", *required_cluster)
     write_record(
         output, "PARAMBANK", hex(abi.parameter_base), hex(abi.parameter_size)
     )
@@ -594,7 +618,7 @@ def export(
     sm_version = sm["version"]
     if arch not in PARAMETER_BASE:
         raise RuntimeError(f"unsupported SASS architecture: {arch}")
-    expected_sm = {"sm90": (9, 0), "sm120": (12, 0)}[arch]
+    expected_sm = {"sm90": (9, 0), "sm100": (10, 0), "sm103": (10, 3), "sm120": (12, 0)}[arch]
     if (sm_version.get("major"), sm_version.get("minor")) != expected_sm:
         raise RuntimeError(
             f"requested {arch} but nvdisasm reported "

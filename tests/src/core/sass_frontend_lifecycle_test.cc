@@ -462,6 +462,9 @@ void CheckFrontend(Scenario scenario, unsigned lanes = 1) {
   frontend->start_cta(0, 0, lanes, 37, lanes, *kernel);
   bool ok = true;
   if (scenario == Scenario::kAtomic || scenario == Scenario::kPredicatedAtomic) {
+    // This fixture starts the adapter directly, bypassing normal CTA admission.
+    // execute() still needs the owning kernel for cluster/DSM interpretation.
+    core->set_kernel(kernel);
     active_mask_t mask;
     for (unsigned lane = 0; lane < lanes; ++lane) mask.set(lane);
     warp_inst_t issued(gpu.getShaderCoreConfig());

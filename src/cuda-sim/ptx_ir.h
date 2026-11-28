@@ -1322,10 +1322,13 @@ class ptx_instruction : public warp_inst_t {
 
   int membar_level() const { return m_membar_level; }
 
+  bool is_cluster_async_store() const;
+
   bool has_memory_read() const {
+    if (is_cluster_async_store()) return false;
     if (m_opcode == PREFETCH_OP || m_opcode == PREFETCHU_OP) return false;
-    if (m_opcode == LD_OP || m_opcode == LDU_OP || m_opcode == TEX_OP ||
-        m_opcode == MMA_LD_OP)
+    if (m_opcode == RED_OP || m_opcode == LD_OP || m_opcode == LDU_OP ||
+        m_opcode == TEX_OP || m_opcode == MMA_LD_OP)
       return true;
     if (m_is_ldgsts) return true;
     // Check PTXPlus operand type below
@@ -1338,8 +1341,10 @@ class ptx_instruction : public warp_inst_t {
     return false;
   }
   bool has_memory_write() const {
+    if (m_opcode == RED_OP) return false;
+    if (is_cluster_async_store()) return false;
     if (m_opcode == PREFETCH_OP || m_opcode == PREFETCHU_OP) return false;
-    if (m_opcode == ST_OP || m_opcode == MMA_ST_OP) return true;
+    if (m_opcode == ST_OP || m_opcode == ST_BULK_OP || m_opcode == MMA_ST_OP) return true;
     // Check PTXPlus operand type below
     // Destination operand is a memory operand
     ptx_instruction::const_iterator op = op_iter_begin();
@@ -1703,6 +1708,8 @@ class function_info {
     m_req_cluster_dim.z = z;
   }
   void set_explicit_cluster(bool v) { m_explicit_cluster = v; }
+  void set_max_cluster_rank(unsigned rank) { m_max_cluster_rank = rank; }
+  unsigned get_max_cluster_rank() const { return m_max_cluster_rank; }
   bool has_explicit_cluster() const { return m_explicit_cluster; }
   dim3 get_req_cluster_dim() const { return m_req_cluster_dim; }
   unsigned get_req_ctas_per_cluster() const {
@@ -1732,6 +1739,7 @@ class function_info {
   unsigned maxnt_id;
   bool m_explicit_cluster;
   dim3 m_req_cluster_dim;
+  unsigned m_max_cluster_rank = 0;
   bool m_cluster_dim_must_be_set;
   bool m_nonportable_cluster_size_allowed;
   int m_cluster_sched_policy;
@@ -1804,29 +1812,13 @@ class arg_buffer_t {
   arg_buffer_t(gpgpu_context *ctx) : m_src_op(ctx) {
     m_is_reg = false;
     m_is_param = false;
-    m_param_value = NULL;
     m_reg_value = ptx_reg_t();
   }
-  arg_buffer_t(const arg_buffer_t &another, gpgpu_context *ctx)
-      : m_src_op(ctx) {
-    make_copy(another);
-  }
-  void make_copy(const arg_buffer_t &another) {
-    m_dst = another.m_dst;
-    m_src_op = another.m_src_op;
-    m_is_reg = another.m_is_reg;
-    m_is_param = another.m_is_param;
-    m_reg_value = another.m_reg_value;
-    m_param_bytes = another.m_param_bytes;
-    if (m_is_param) {
-      m_param_value = malloc(m_param_bytes);
-      memcpy(m_param_value, another.m_param_value, m_param_bytes);
-    }
-  }
-  void operator=(const arg_buffer_t &another) { make_copy(another); }
-  ~arg_buffer_t() {
-    if (m_is_param) free(m_param_value);
-  }
+  // Value ownership is required by std::list insertion and call-frame return
+  // assignment. The two-argument constructor is not a C++ copy constructor.
+  arg_buffer_t(const arg_buffer_t &another, gpgpu_context *)
+      : arg_buffer_t(another) {}
+  void make_copy(const arg_buffer_t &another) { *this = another; }
   arg_buffer_t(const symbol *dst_sym, const operand_info &src_op,
                ptx_reg_t source_value)
       : m_src_op(src_op) {
@@ -1840,9 +1832,9 @@ class arg_buffer_t {
     } else {
       m_is_param = true;
       m_is_reg = false;
-      m_param_value = calloc(sizeof(ptx_reg_t), 1);
+      m_param_value.resize(sizeof(ptx_reg_t));
       // new (m_param_value) ptx_reg_t(source_value);
-      memcpy(m_param_value, &source_value, sizeof(ptx_reg_t));
+      memcpy(m_param_value.data(), &source_value, sizeof(ptx_reg_t));
       m_param_bytes = sizeof(ptx_reg_t);
     }
   }
@@ -1878,9 +1870,9 @@ class arg_buffer_t {
       // param
       m_is_param = true;
       m_is_reg = false;
-      m_param_value = calloc(array_size, 1);
+      m_param_value.resize(array_size);
       m_param_bytes = array_size;
-      memcpy(m_param_value, source_param_value_array, array_size);
+      memcpy(m_param_value.data(), source_param_value_array, array_size);
     }
   }
 
@@ -1892,7 +1884,7 @@ class arg_buffer_t {
 
   const void *get_param_buffer() const {
     assert(m_is_param);
-    return m_param_value;
+    return m_param_value.data();
   }
   size_t get_param_buffer_size() const {
     assert(m_is_param);
@@ -1903,7 +1895,7 @@ class arg_buffer_t {
 
  private:
   // destination of copy
-  const symbol *m_dst;
+  const symbol *m_dst = nullptr;
 
   // source operand
   operand_info m_src_op;
@@ -1913,11 +1905,11 @@ class arg_buffer_t {
   bool m_is_param;
 
   // source is register
-  ptx_reg_t m_reg_value;
+  ptx_reg_t m_reg_value = ptx_reg_t();
 
   // source is param
-  void *m_param_value;
-  unsigned m_param_bytes;
+  std::vector<unsigned char> m_param_value;
+  unsigned m_param_bytes = 0;
 };
 
 typedef std::list<arg_buffer_t> arg_buffer_list_t;

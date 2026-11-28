@@ -91,3 +91,306 @@ tests = [
   { name = "backward-smoke", group = "fa3", profile = "smoke", gtest_filter = "Fa3PrefillFp16BackwardSmokeTest.*" },
   { name = "packgqa", group = "fa3", profile = "packgqa", gtest_filter = "Fa3FwdPackGqaFp16IntegrationTest.Smoke" },
 ]
+
+# The post-check builds one fixture binary and executes it through both
+# frontends with isolated scratch configurations; SASS remains opt-in.
+[jobs.sm100-tmem]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "tmem-components-and-dual-launch", group = "unit", gtest_filter = "Tcgen05*", post_check = "tests/ci/check_tmem_dual.py" },
+]
+
+[jobs.sm100-mma]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "mma-components-and-dual-launch", group = "unit", gtest_filter = "Tcgen05*:SassTimingProjectionTest.*Mma*:SassTimingProjectionTest.Fp8*", post_check = "tests/ci/check_mma_dual.py" },
+]
+
+[jobs.sm100-pair]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "pair-components-and-dual-launch", group = "unit", gtest_filter = "Tcgen05*", post_check = "tests/ci/check_pair_dual.py" },
+]
+
+[jobs.sm100-clc]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "clc-components-and-dual-launch", group = "unit", gtest_filter = "Clc*:KernelInfoFrontend.*:SassReduction.*", post_check = "tests/ci/check_clc_dual.py" },
+]
+
+[jobs.sm100-driver-tma]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "driver-maps-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*:Fa4OpaqueTensorMapTest.*:SassParameterAlias.*:TmaClusterTargets.*", post_check = "tests/ci/check_driver_tma_dual.py" },
+]
+
+[jobs.sm100-packed-tma]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "packed-tma-dual-launch", group = "unit", gtest_filter = "TmaPacked4.*:DriverTensorMap.*:PtxTensorCoordinates.*", post_check = "tests/ci/check_packed_tma_dual.py" },
+]
+
+[jobs.sm100-bfloat]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "bfloat-components-and-dual-launch", group = "unit", gtest_filter = "BfloatBits.*:SassBfloatConversion.*", post_check = "tests/ci/check_bfloat_dual.py" },
+]
+
+[jobs.sm100-ws-collectors]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "ws-collectors-and-dual-launch", group = "unit", gtest_filter = "Tcgen05Collector.*", post_check = "tests/ci/check_ws_collectors_dual.py" },
+]
+
+[jobs.sm100-memory-forms]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "memory-forms-and-dual-launch", group = "unit", gtest_filter = "SharedBulk.*:SassSharedBulk.*:SassGlobal256.*:PtxMemoryForms.*:MemoryTransportTest.WidePerLaneAccessesKeepSectorRequestsAndCoalescing", post_check = "tests/ci/check_memory_forms_dual.py" },
+]
+
+[jobs.sm100-narrow-conversion]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "narrow-conversion-and-dual-launch", group = "unit", gtest_filter = "NarrowConversion.*:SassFunctionalTest.DeepInferFp8*:SassFunctionalTest.BlackwellFp8*:SassFunctionalTest.Ue8m0Pack*:SassFunctionalTest.Dsv4Fp8Unpack*:SassFunctionalTest.DeepInferFp4Pack*", post_check = "tests/ci/check_narrow_conversion_dual.py" },
+]
+
+[jobs.sm100-mov-pack]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "literal-mov-pack-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_mov_pack_dual.py" },
+]
+
+[jobs.sm100-warp-reduce]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "warp-reduce-components-and-dual-launch", group = "unit", gtest_filter = "WarpReduce.*:WarpShift.*:SassReduction.*:MemoryTransportTest.DistinctLoadProducersCompleteIndependently", post_check = "tests/ci/check_warp_reduce_dual.py" },
+]
+
+[jobs.sm100-funnel-shift]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "funnel-shift-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_funnel_shift_dual.py" },
+]
+
+[jobs.sm100-cached-completion]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "cached-load-completion-dual-launch", group = "unit", gtest_filter = "MemoryTransportTest.DistinctLoadProducersCompleteIndependently", post_check = "tests/ci/check_cached_completion_dual.py" },
+]
+
+[jobs.sm100-bit-search]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "bit-search-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_bit_search_dual.py" },
+]
+
+[jobs.sm100-bfloat-arithmetic]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "bfloat-arithmetic-components-and-dual-launch", group = "unit", gtest_filter = "BfloatArithmetic.*:BfloatBits.*", post_check = "tests/ci/check_bfloat_arithmetic_dual.py" },
+]
+
+[jobs.sm100-vector-order]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "vector-type-order-dual-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_vector_order_dual.py" },
+]
+
+[jobs.sm100-cluster-store]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "cluster-store-components-and-dual-launch", group = "unit", gtest_filter = "ClusterStoreContract.*", post_check = "tests/ci/check_cluster_store_dual.py" },
+]
+
+[jobs.sm100-leading-bit-base]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "leading-bit-boundaries", group = "unit", gtest_filter = "BitScan.*", post_check = "tests/ci/check_leading_bit_base_dual.py" },
+]
+
+[jobs.sm100-leading-bit]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "leading-bit-components-and-dual-launch", group = "unit", gtest_filter = "BitScan.*:NativeBitScan.*", post_check = "tests/ci/check_leading_bit_dual.py" },
+]
+
+[jobs.sm100-fence-visibility]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "ordinary-fence-shared-visibility", group = "unit", gtest_filter = "PtxFenceTiming.*", post_check = "tests/ci/check_fence_visibility_dual.py" },
+]
+
+[jobs.sm100-acq-rel-fence]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "ordinary-fence-forms-and-publication", group = "unit", gtest_filter = "PtxFenceTiming.*:SassStrongGlobal.*", post_check = "tests/ci/check_acq_rel_fence_dual.py" },
+]
+
+[jobs.sm100-byte-matrix]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "byte-matrix-components-and-dual-launch", group = "unit", gtest_filter = "ByteMatrixNative.*", post_check = "tests/ci/check_byte_matrix_dual.py" },
+]
+
+[jobs.sm100-mixed-arithmetic]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "mixed-arithmetic-components-and-dual-launch", group = "unit", gtest_filter = "MixedArithmeticNative.*:MixedArithmeticCommon.*:MixedArithmeticPtx.*", post_check = "tests/ci/check_mixed_arithmetic_dual.py" },
+]
+
+[jobs.sm100-integer-literals]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "integer-literal-parser", group = "unit", gtest_filter = "PtxIntegerLiteral.*" },
+]
+
+[jobs.sm100-ternary-logic]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "ternary-logic-components-and-dual-launch", group = "unit", gtest_filter = "TernaryLogicCommon.*:TernaryLogicNative.*", post_check = "tests/ci/check_ternary_logic_dual.py" },
+]
+
+[jobs.sm100-tensormap-diagnostics]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "tensor-map-bounded-diagnostics", group = "unit", gtest_filter = "TensorMapDiagnostics.*" },
+]
+
+[jobs.sm100-tma-float-loads]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "floating-tma-and-dual-launch", group = "unit", gtest_filter = "DriverTensorMap.*", post_check = "tests/ci/check_tma_float_dual.py" },
+]
+
+[jobs.sm100-global-reductions]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "global-integer-reduction", group = "unit", gtest_filter = "GlobalReduction.*", post_check = "tests/ci/check_global_reduce_dual.py" },
+]
+
+[jobs.sm100-ptx-call-ownership]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "ptx-call-argument-ownership", group = "call_ownership", gtest_filter = "PtxCallOwnership.*", post_check = "tests/ci/check_call_ownership.py" },
+]
+
+[jobs.sm100-half-sign]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "half-unary-sign-dual-launch", group = "half_sign", gtest_filter = "HalfSign.*", post_check = "tests/ci/check_half_sign_dual.py" },
+]
+
+[jobs.sm100-bfloat-minmax]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "bfloat-minmax-dual-launch", group = "bfloat_minmax", gtest_filter = "BfloatMinMax.*", post_check = "tests/ci/check_bfloat_minmax_dual.py" },
+]
+
+[jobs.sm100-compiled-cluster]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "compiled-cluster-dual-launch", group = "unit", gtest_filter = "NativeClusterMetadata.*", post_check = "tests/ci/check_compiled_cluster_dual.py" },
+]
+
+[jobs.sm100-shared-popc]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "shared-popc-dual-launch", group = "unit", gtest_filter = "SassTimingProjectionTest.ProjectsPopcIncrementWithSharedAtomicProxy", post_check = "tests/ci/check_shared_popc_dual.py" },
+]
+
+[jobs.sm100-native-data-movement]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "native-data-movement-dual-launch", group = "unit", gtest_filter = "SassNativeDataMovement.*:SassGlobal256.*:SassStrongGlobal.*", post_check = "tests/ci/check_native_data_movement_dual.py" },
+]
+
+[jobs.sm100-signed-byte-load]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "signed-byte-load-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_signed_load.py" },
+]
+
+[jobs.sm100-tensor-coordinates]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "tensor-coordinate-parser", group = "unit", gtest_filter = "PtxTensorCoordinates.*" },
+]
+
+[jobs.sm100-native-exit]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "preexit-functional-and-timing", group = "unit", gtest_filter = "SassPreexit.*" },
+]
+
+[jobs.sm100-ptx-shuffle]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "shuffle-snapshot-launch", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_ptx_shuffle.py" },
+]
+
+[jobs.sm100-warp-shuffle]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "shuffle-components-and-dual-launch", group = "unit", gtest_filter = "SassShuffle.*", post_check = "tests/ci/check_warp_shuffle_dual.py" },
+]
+
+[jobs.sm100-cta-reduction]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "cta-reduction-components-and-dual-launch", group = "unit", gtest_filter = "SassCtaReduction.*", post_check = "tests/ci/check_cta_reduction_dual.py" },
+]
+
+[jobs.sm100-ptx-cta-reduction]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "cta-reduction-negated-predicates", group = "unit", gtest_filter = "PtxControlPredecode.*", post_check = "tests/ci/check_ptx_cta_reduction.py" },
+]
+
+[jobs.sm100-bulk-descriptor]
+arch = "sm100"
+cuda = "13.3"
+tests = [
+  { name = "linear-bulk-descriptors-and-dual-launch", group = "unit", gtest_filter = "SassBulkDescriptor.*", post_check = "tests/ci/check_linear_bulk_dual.py" },
+]

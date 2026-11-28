@@ -6,6 +6,26 @@
 
 namespace flash_gpgpu_sim {
 
+namespace {
+#include "native_recurrence_table.h"
+}
+unsigned tcgen05_b200_recurrence(tcgen05_native_profile profile, unsigned m,
+                                 unsigned n, unsigned k, unsigned group,
+                                 bool tmem_a, bool ws) {
+  if (profile == tcgen05_native_profile::unknown || unsigned(profile) > 5 ||
+      !m || m >= 512 || !n || n >= 512 || !k || k >= 256 ||
+      (group != 1 && group != 2))
+    return 0;
+  const uint64_t key = uint64_t(profile) << 30 | uint64_t(group) << 28 |
+                       uint64_t(tmem_a) << 27 | uint64_t(ws) << 26 |
+                       uint64_t(m) << 17 | uint64_t(n) << 8 | k;
+  const auto end = std::end(kB200Recurrence);
+  const auto row = std::lower_bound(
+      std::begin(kB200Recurrence), end, key,
+      [](const auto &r, uint64_t value) { return r.key < value; });
+  return row != end && row->key == key ? row->cycles : 0;
+}
+
 bool tcgen05_thread_stream_key_t::operator<(
     const tcgen05_thread_stream_key_t &other) const {
   return std::tie(hw_cta_id, warp_id, lane_id, cta_group) <
@@ -25,7 +45,23 @@ tcgen05_unit_t::tcgen05_unit_t(const tcgen05_timing_config_t &config)
   assert(m_config.mma_f16_flops_per_cycle > 0);
 }
 
-bool tcgen05_unit_t::can_enqueue(tcgen05_op_kind_t kind, uint64_t cycle) {
+bool tcgen05_unit_t::can_enqueue(tcgen05_op_kind_t kind, uint64_t cycle,
+                                 unsigned partition,
+                                 const tcgen05_thread_stream_key_t *owner) {
+  if (owner && kind == TCGEN05_TIMING_MMA && m_config.mma_precision_timing) {
+    if (cycle < m_owner_issue[*owner])
+      return false;
+    const unsigned limit = m_config.owner_queue_depth[owner->cta_group - 1];
+    if (limit) {
+      unsigned count = 0;
+      for (const auto &p : m_pending_ops)
+        if (p.kind == kind && !(p.thread_stream < *owner) &&
+            !(*owner < p.thread_stream))
+          ++count;
+      if (count >= limit)
+        return false;
+    }
+  }
   assert(kind < TCGEN05_TIMING_OP_COUNT);
   if (m_config.async_queue_depth != 0 &&
       m_pending_ops.size() >= m_config.async_queue_depth) {
@@ -35,7 +71,12 @@ bool tcgen05_unit_t::can_enqueue(tcgen05_op_kind_t kind, uint64_t cycle) {
     }
     return false;
   }
-  if (cycle < m_next_issue_cycle[kind]) {
+  const uint64_t next =
+      ((kind == TCGEN05_TIMING_LD || kind == TCGEN05_TIMING_ST) &&
+       partition != ~0u)
+          ? m_mem_next_issue[{kind, partition}]
+          : m_next_issue_cycle[kind];
+  if (cycle < next) {
     if (cycle != m_last_issue_interval_stall_cycle) {
       ++m_stats.issue_interval_stall_cycles;
       m_last_issue_interval_stall_cycle = cycle;
@@ -47,10 +88,15 @@ bool tcgen05_unit_t::can_enqueue(tcgen05_op_kind_t kind, uint64_t cycle) {
 
 uint64_t
 tcgen05_unit_t::enqueue_thread_op(const tcgen05_thread_stream_key_t &stream,
-                                  const tcgen05_op_t &op, uint64_t cycle) {
+                                  const tcgen05_op_t &op, uint64_t cycle,
+                                  tcgen05_unit_t *peer,
+                                  std::function<uint64_t(uint64_t)> feed) {
   assert(op.kind == TCGEN05_TIMING_MMA || op.kind == TCGEN05_TIMING_CP ||
          op.kind == TCGEN05_TIMING_SHIFT);
-  assert(can_enqueue(op.kind, cycle));
+  // Admission is checked once before the warp executes. Several PTX lanes
+  // may contribute distinct single-thread operations in that same issue.
+  // Serialize their front-end service without dropping a lane's operation.
+  cycle = std::max(cycle, m_next_issue_cycle[op.kind]);
 
   pending_op_t pending;
   pending.thread_scoped = true;
@@ -58,7 +104,13 @@ tcgen05_unit_t::enqueue_thread_op(const tcgen05_thread_stream_key_t &stream,
   pending.kind = op.kind;
   pending.sequence = ++m_thread_next_sequence[stream];
 
-  if (op.kind == TCGEN05_TIMING_MMA) {
+  if (op.kind == TCGEN05_TIMING_MMA && m_config.mma_precision_timing) {
+    pending.backend_done_cycle = schedule_mma(stream, op, cycle, peer, feed);
+    pending.completion_cycle =
+        pending.backend_done_cycle + m_config.mma_completion_tail_latency;
+    m_next_issue_cycle[op.kind] = cycle + m_config.mma_issue_interval;
+    m_owner_issue[stream] = cycle + m_config.owner_issue_interval;
+  } else if (op.kind == TCGEN05_TIMING_MMA) {
     assert(op.work > 0);
     if (cycle >= m_mma_backend_available_cycle) {
       m_mma_busy_period_start_cycle = cycle;
@@ -90,12 +142,71 @@ tcgen05_unit_t::enqueue_thread_op(const tcgen05_thread_stream_key_t &stream,
   return pending.sequence;
 }
 
+void tcgen05_unit_t::reserve_compute(uint64_t start, uint64_t compute_done,
+                                     uint64_t service_done,
+                                     uint64_t issue_cycle) {
+  m_mma_backend_available_cycle = service_done;
+  m_compute_windows.emplace_back(start, compute_done);
+  if (start == issue_cycle && m_last_cycle_tick == issue_cycle)
+    ++m_stats.backend_busy_cycles;
+}
+
+uint64_t
+tcgen05_unit_t::schedule_mma(const tcgen05_thread_stream_key_t &stream,
+                             const tcgen05_op_t &op, uint64_t cycle,
+                             tcgen05_unit_t *peer,
+                             const std::function<uint64_t(uint64_t)> &feed) {
+  assert(op.work && (stream.cta_group == 1 || peer));
+  unsigned rate = m_config.mma_rates[unsigned(op.mma.kind)];
+  if (!rate)
+    rate = m_config.mma_f16_flops_per_cycle;
+  const uint64_t capacity = uint64_t(rate) * stream.cta_group;
+  const uint64_t compute =
+      std::max<uint64_t>(1, (op.work + capacity - 1) / capacity);
+  uint64_t start =
+      std::max(cycle + (feed ? 1 : 0), m_mma_backend_available_cycle);
+  if (peer)
+    start = std::max(start, peer->m_mma_backend_available_cycle);
+  const uint64_t compute_done = start + compute;
+  uint64_t service_done = compute_done;
+  if (feed)
+    service_done = std::max(service_done, feed(start));
+  reserve_compute(start, compute_done, service_done, cycle);
+  if (peer)
+    peer->reserve_compute(start, compute_done, service_done, cycle);
+  unsigned recurrence = 0;
+  if (m_config.b200_recurrence) {
+    recurrence =
+        tcgen05_b200_recurrence(op.mma.profile, op.mma.m, op.mma.n, op.mma.k,
+                                stream.cta_group, op.mma.tmem_a, op.mma.ws);
+    if (recurrence)
+      ++m_stats.recurrence_table_ops;
+    else
+      ++m_stats.recurrence_fallback_ops;
+  }
+  if (!recurrence)
+    recurrence = m_config.owner_recurrence[stream.cta_group - 1];
+  if (recurrence) {
+    const auto found = m_owner_done.find(stream);
+    const bool first = found == m_owner_done.end();
+    const auto previous = first ? 0 : found->second;
+    const auto done =
+        std::max(cycle, previous) + recurrence +
+        (first ? m_config.owner_startup[stream.cta_group - 1] : 0);
+    m_owner_done[stream] = done;
+    service_done = std::max(service_done, done);
+  }
+  return service_done;
+}
+
 uint64_t
 tcgen05_unit_t::enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
-                                    const tcgen05_op_t &op, uint64_t cycle) {
+                                    const tcgen05_op_t &op, uint64_t cycle,
+                                    uint64_t pipeline_completion_tag) {
   assert(op.kind == TCGEN05_TIMING_LD || op.kind == TCGEN05_TIMING_ST);
   assert(op.completion_latency > 0 && op.initiation_interval > 0);
-  assert(can_enqueue(op.kind, cycle));
+  assert(
+      can_enqueue(op.kind, cycle, op.partitioned_mem ? stream.partition : ~0u));
 
   std::map<tcgen05_warp_stream_key_t, uint64_t> &sequences =
       op.kind == TCGEN05_TIMING_LD ? m_ld_next_sequence : m_st_next_sequence;
@@ -104,9 +215,16 @@ tcgen05_unit_t::enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
   pending.warp_stream = stream;
   pending.kind = op.kind;
   pending.sequence = ++sequences[stream];
-  pending.backend_done_cycle = cycle + op.completion_latency;
+  pending.pipeline_completion_tag = pipeline_completion_tag;
+  pending.backend_done_cycle = pipeline_completion_tag
+                                   ? std::numeric_limits<uint64_t>::max()
+                                   : cycle + op.completion_latency;
   pending.completion_cycle = pending.backend_done_cycle;
-  m_next_issue_cycle[op.kind] = cycle + op.initiation_interval;
+  if (op.partitioned_mem)
+    m_mem_next_issue[{op.kind, stream.partition}] =
+        cycle + op.initiation_interval;
+  else
+    m_next_issue_cycle[op.kind] = cycle + op.initiation_interval;
   m_pending_ops.push_back(pending);
   ++m_stats.issued[op.kind];
   m_stats.max_queue_occupancy =
@@ -114,12 +232,25 @@ tcgen05_unit_t::enqueue_warp_mem_op(const tcgen05_warp_stream_key_t &stream,
   return pending.sequence;
 }
 
+void tcgen05_unit_t::complete_warp_mem_op(uint64_t tag, uint64_t cycle) {
+  assert(tag != 0);
+  for (auto &pending : m_pending_ops) {
+    if (!pending.thread_scoped && pending.pipeline_completion_tag == tag) {
+      assert(pending.completion_cycle == std::numeric_limits<uint64_t>::max());
+      pending.backend_done_cycle = pending.completion_cycle = cycle;
+      return;
+    }
+  }
+  assert(false && "TMEM pipeline completion must match a pending operation");
+}
+
 void tcgen05_unit_t::commit(const tcgen05_thread_stream_key_t &stream,
-                            uint32_t mbarrier_addr) {
+                            uint32_t mbarrier_addr, uint16_t multicast_mask) {
   pending_commit_t commit;
   commit.stream = stream;
   commit.cutoff = m_thread_next_sequence[stream];
   commit.mbarrier_addr = mbarrier_addr;
+  commit.multicast_mask = multicast_mask;
   m_pending_commits.push_back(commit);
   resolve_controls();
 }
@@ -191,6 +322,7 @@ void tcgen05_unit_t::resolve_controls() {
     event.hw_cta_id = it->stream.hw_cta_id;
     event.warp_id = it->stream.warp_id;
     event.mbarrier_addr = it->mbarrier_addr;
+    event.multicast_mask = it->multicast_mask;
     m_completion_events.push_back(event);
     it = m_pending_commits.erase(it);
   }
@@ -213,7 +345,14 @@ void tcgen05_unit_t::resolve_controls() {
 }
 
 void tcgen05_unit_t::cycle(uint64_t cycle) {
-  if (cycle < m_mma_backend_available_cycle)
+  m_last_cycle_tick = cycle;
+  if (m_config.mma_precision_timing) {
+    while (!m_compute_windows.empty() &&
+           m_compute_windows.front().second <= cycle)
+      m_compute_windows.pop_front();
+    if (!m_compute_windows.empty() && cycle >= m_compute_windows.front().first)
+      ++m_stats.backend_busy_cycles;
+  } else if (cycle < m_mma_backend_available_cycle)
     ++m_stats.backend_busy_cycles;
   m_stats.commit_wait_cycles += m_pending_commits.size();
   for (std::vector<pending_wait_t>::const_iterator it = m_pending_waits.begin();
@@ -244,6 +383,12 @@ tcgen05_unit_t::take_completion_events() {
 }
 
 void tcgen05_unit_t::cleanup_cta(unsigned hw_cta_id) {
+  for (auto *map : {&m_owner_done, &m_owner_issue})
+    for (auto it = map->begin(); it != map->end();)
+      if (it->first.hw_cta_id == hw_cta_id)
+        it = map->erase(it);
+      else
+        ++it;
   m_pending_ops.erase(
       std::remove_if(m_pending_ops.begin(), m_pending_ops.end(),
                      [hw_cta_id](const pending_op_t &op) {

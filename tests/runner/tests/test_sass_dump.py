@@ -89,5 +89,26 @@ class SassDumpTest(unittest.TestCase):
             self.assertEqual(destination.read_text(), 'fresh decode')
 
 
+
+
+class RequiredClusterMetadataTest(unittest.TestCase):
+    def test_scoped_presence_and_compiled_dimensions(self):
+        parse = sys.modules['nvdisasm_to_sassir'].parse_required_cluster
+        record = "\tEIATTR_CTA_PER_CLUSTER\n\tFormat: EIFMT_SVAL\n\tValue: 0x2 1 1\n"
+        text = ".nv.info.k\n\tEIATTR_EXPLICIT_CLUSTER\n" + record + ".nv.info.other\n"
+        self.assertEqual(parse(text, 'k'), (2, 1, 1))
+        self.assertIsNone(parse(text, 'other'))
+        self.assertIsNone(parse('.nv.info.k\n' + record, 'k'))
+
+    def test_rejects_missing_duplicate_zero_and_overflow(self):
+        parse = sys.modules['nvdisasm_to_sassir'].parse_required_cluster
+        prefix = '.nv.info.k\n\tEIATTR_EXPLICIT_CLUSTER\n'
+        record = "\tEIATTR_CTA_PER_CLUSTER\n\tFormat: EIFMT_SVAL\n\tValue: {}\n"
+        for body in ['', record.format('0 1 1'), record.format('-1 1 1'),
+                     record.format('4294967296 1 1'), record.format('65536 65536 1'),
+                     record.format('2 1 1') * 2]:
+            with self.subTest(body=body), self.assertRaises(RuntimeError):
+                parse(prefix + body, 'k')
+
 if __name__ == '__main__':
     unittest.main()

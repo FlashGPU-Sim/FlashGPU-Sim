@@ -102,3 +102,25 @@ TEST(PtxTimingIsolationTest, WgmmaRfPriorityPreservesPublicDefault) {
   option_parser_destroy(options);
 }
 }  // namespace
+
+TEST(PtxTimingIsolationTest, B200SystemExtensionsDefaultOff) {
+  shader_core_config shader(GPGPU_Context());
+  memory_config memory(GPGPU_Context());
+  auto *options = option_parser_create();
+  shader.reg_options(options);
+  memory.reg_options(options);
+  EXPECT_FALSE(shader.gpgpu_native_imad_on_sp);
+  EXPECT_FALSE(shader.gpgpu_native_fp32_aux_paths);
+  EXPECT_EQ(shader.gpgpu_native_imad_wide_initiation, 0u);
+  EXPECT_EQ(shader.gpgpu_native_imad_wide_min_issue_interval, 0u);
+  EXPECT_EQ(shader.gpgpu_native_imad_wide_result_latency, 0u);
+  EXPECT_EQ(shader.gpgpu_cta_dispatch_width, 0u);
+  EXPECT_EQ(shader.gpgpu_cta_dispatch_per_gpc, 0u);
+  EXPECT_EQ(shader.gpgpu_cta_dispatch_interval, 0u);
+  EXPECT_FALSE(shader.gpgpu_tma_instruction_issue_hold);
+  EXPECT_EQ(shader.gpgpu_tma_ptx_issue_hold_latency, 0u);
+  EXPECT_EQ(shader.gpgpu_tma_ptx_issue_hold_interval, 0u);
+  EXPECT_EQ(memory.l2_mshr_release_requests_per_cycle, 1u);
+  EXPECT_EQ(memory.simple_dram_remote_read_latency, 0u);
+  option_parser_destroy(options);
+}

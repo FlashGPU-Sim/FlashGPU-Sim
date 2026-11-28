@@ -421,20 +421,23 @@ TEST_F(PtxSchedulerGuidedTest, GeneratesDistinctGuidesForFileAndStringModules) {
 }
 }  // namespace
 
-TEST(PtxFenceTiming, DefaultAndScUseMemoryOrderingPath) {
+TEST(PtxFenceTiming, OrdinaryFormsUseMemoryOrderingPath) {
   auto *ctx = GPGPU_Context(); GPGPUSim_Context(ctx);
   const bool reorder=ctx->ptx_reorder_enabled, guide=ctx->ptx_reorder_sass_guided;
   ctx->ptx_reorder_enabled = ctx->ptx_reorder_sass_guided = false;
   const char *file = "ordinary_fence_timing.ptx";
   std::ofstream(file) << ".version 8.0\n.target sm_90\n.address_size 64\n"
       ".entry ordinary_fences() { fence.cta; fence.gpu; fence.sys; "
-      "fence.sc.cta; fence.sc.gpu; fence.sc.sys; ret; }\n";
+      "fence.sc.cta; fence.sc.gpu; fence.sc.sys; "
+      "fence.cluster; fence.sc.cluster; "
+      "fence.acq_rel.cta; fence.acq_rel.cluster; "
+      "fence.acq_rel.gpu; fence.acq_rel.sys; ret; }\n";
   auto *symbols = ctx->gpgpu_ptx_sim_load_ptx_from_filename(file);
   std::filesystem::remove(file);
   auto *func = symbols->lookup_function("ordinary_fences");
   ASSERT_NE(func, nullptr); func->do_pdom(); func->set_pdom();
   unsigned pc=func->get_start_PC();
-  for (unsigned i=0;i<6;++i) {
+  for (unsigned i=0;i<12;++i) {
     const auto *inst=func->get_dyn_inst(pc);
     ASSERT_NE(inst,nullptr); ASSERT_EQ(inst->get_opcode(),FENCE_OP);
     EXPECT_EQ(inst->op,MEMORY_BARRIER_OP) << inst->to_string();

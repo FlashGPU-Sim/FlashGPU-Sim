@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <list>
 #include <set>
 
@@ -142,6 +143,8 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
           config->simple_dram_service_rate_den,
           (MAX_MEMORY_ACCESS_SIZE + config->dram_atom_size - 1) /
               config->dram_atom_size),
+      m_simple_dram_local_reads(0),
+      m_simple_dram_remote_reads(0),
       m_simple_dram_cycles(0),
       m_simple_dram_issue_requests(0),
       m_simple_dram_issue_atoms(0),
@@ -154,6 +157,14 @@ memory_partition_unit::memory_partition_unit(unsigned partition_id,
       m_simple_dram_queue_length_sum(0),
       m_simple_dram_queue_length_max(0),
       m_gpu(gpu) {
+  if (config->simple_dram_remote_read_latency != 0) {
+    const unsigned stripe = config->simple_dram_locality_stripe_bytes;
+    if (!config->simple_dram_model || stripe < 128 || (stripe & (stripe - 1))) {
+      fprintf(stderr, "HBM locality requires simple DRAM and power-of-two "
+                      "stripe >= 128 bytes\n");
+      abort();
+    }
+  }
   m_dram = new dram_t(m_id, m_config, stats, this, gpu);
 
   m_sub_partition = new memory_sub_partition
@@ -405,7 +416,35 @@ void memory_partition_unit::simple_dram_model_cycle() {
       dram_delay_t d;
       d.req = mf;
       d.ready_cycle = now + m_config->dram_latency;
-      m_dram_latency_queue.push_back(d);
+      if (m_config->simple_dram_remote_read_latency != 0) {
+        // Abstract balanced locality domains, NOT a physical Blackwell die map.
+        // Address mapping is line-stable, so sectors of a line share a home.
+        if (!mf->is_write() && mf->get_sid() < m_gpu->get_config().num_shader()) {
+          if (m_config->simple_dram_local_read_latency != 0)
+            d.ready_cycle = now + m_config->simple_dram_local_read_latency;
+          const unsigned home =
+              (mf->get_addr() / m_config->simple_dram_locality_stripe_bytes) & 1ull;
+          const bool remote = (mf->get_sid() & 1u) != home;
+          if (remote) {
+            d.ready_cycle += m_config->simple_dram_remote_read_latency;
+            ++m_simple_dram_remote_reads;
+          } else {
+            ++m_simple_dram_local_reads;
+          }
+        }
+        // Variable flight times must not introduce FIFO head-of-line delay.
+        // Preserve admission order for equal ready times and existing aggregate
+        // return service/backpressure; do not create extra return bandwidth.
+        auto pos = m_dram_latency_queue.end();
+        while (pos != m_dram_latency_queue.begin()) {
+          auto previous = std::prev(pos);
+          if (previous->ready_cycle <= d.ready_cycle) break;
+          pos = previous;
+        }
+        m_dram_latency_queue.insert(pos, d);
+      } else {
+        m_dram_latency_queue.push_back(d);
+      }
       mf->set_status(IN_PARTITION_DRAM_LATENCY_QUEUE, now);
       m_arbitration_metadata.borrow_credit(spid);
       m_mem_stats->get_stats()->memlatstat_dram_access(mf);
@@ -428,6 +467,18 @@ void memory_partition_unit::simple_dram_model_cycle() {
   m_simple_dram_queue_length_sum += queue_length;
   m_simple_dram_queue_length_max =
       std::max(m_simple_dram_queue_length_max, queue_length);
+}
+
+void memory_partition_unit::print_locality_stat(FILE *fp) const {
+  if (m_config->simple_dram_remote_read_latency != 0) {
+    fprintf(fp, "simple_dram_locality[%u] local_reads=%llu remote_reads=%llu "
+                "local_latency=%u remote_extra=%u stripe_bytes=%u\n",
+            m_id, m_simple_dram_local_reads, m_simple_dram_remote_reads,
+            m_config->simple_dram_local_read_latency != 0
+                ? m_config->simple_dram_local_read_latency : m_config->dram_latency,
+            m_config->simple_dram_remote_read_latency,
+            m_config->simple_dram_locality_stripe_bytes);
+  }
 }
 
 void memory_partition_unit::print_stat(FILE *fp) const {
@@ -453,6 +504,7 @@ void memory_partition_unit::print_stat(FILE *fp) const {
           ? 0.0
           : static_cast<double>(m_simple_dram_queue_length_sum) /
                 m_simple_dram_cycles;
+  print_locality_stat(fp);
   fprintf(fp,
           "simple_dram_service[%u] rate=%u/%u cycles=%llu "
           "issue_requests=%llu issue_atoms=%llu issue_util=%.4f%% "
@@ -714,45 +766,50 @@ void memory_sub_partition::process_l2_access_result(
 }
 
 void memory_sub_partition::service_ready_l2_response() {
-  if (m_config->m_L2_config.disabled() || !m_L2cache->access_ready() ||
-      m_L2_icnt_queue->full())
-    return;
+  // Count returned waiter requests, not MSHR entries or fill transactions.
+  // Recheck FIFO capacity after each release; width=1 preserves legacy order.
+  for (unsigned released = 0;
+       released < m_config->l2_mshr_release_requests_per_cycle; ++released) {
+    if (m_config->m_L2_config.disabled() || !m_L2cache->access_ready() ||
+        m_L2_icnt_queue->full())
+      return;
 
-  // A read miss writes the fill and subsequently reads the array for its
-  // response. Inspect without dequeuing so exhausted array credit retains
-  // MSHR ownership until the response can actually be serviced.
-  if (m_l2_port_model == l2_port_model_kind::multi_issue &&
-      m_config->l2_shared_data_array) {
-    mem_fetch *next = m_L2cache->peek_next_access();
-    if (!next->is_write() && next->get_access_type() != L2_WR_ALLOC_R) {
-      assert(next->get_data_size() == SECTOR_SIZE);
-      if (!m_l2_multi_issue_ports.data_port_has_capacity()) return;
-      const unsigned accepted =
-          m_l2_multi_issue_ports.accept_data(1, L2_MULTI_ISSUE_MISS_READ);
-      assert(accepted == 1);
+    // A read miss writes the fill and subsequently reads the array for its
+    // response. Inspect without dequeuing so exhausted array credit retains
+    // MSHR ownership until the response can actually be serviced.
+    if (m_l2_port_model == l2_port_model_kind::multi_issue &&
+        m_config->l2_shared_data_array) {
+      mem_fetch *next = m_L2cache->peek_next_access();
+      if (!next->is_write() && next->get_access_type() != L2_WR_ALLOC_R) {
+        assert(next->get_data_size() == SECTOR_SIZE);
+        if (!m_l2_multi_issue_ports.data_port_has_capacity()) return;
+        const unsigned accepted =
+            m_l2_multi_issue_ports.accept_data(1, L2_MULTI_ISSUE_MISS_READ);
+        assert(accepted == 1);
+      }
     }
-  }
-  mem_fetch *mf = m_L2cache->next_access();
-  if (mf->get_access_type() !=
-      L2_WR_ALLOC_R) {  // Don't pass write allocate read request back to
-                        // upper level cache
-    mf->set_reply();
-    mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
-                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    enqueue_l2_response(mf);
-    return;
-  }
+    mem_fetch *mf = m_L2cache->next_access();
+    if (mf->get_access_type() !=
+        L2_WR_ALLOC_R) {  // Don't pass write allocate read request back to
+                          // upper level cache
+      mf->set_reply();
+      mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
+                     m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      enqueue_l2_response(mf);
+      continue;
+    }
 
-  if (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE) {
-    mem_fetch *original_wr_mf = mf->get_original_wr_mf();
-    assert(original_wr_mf);
-    original_wr_mf->set_reply();
-    original_wr_mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
-                               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    enqueue_l2_response(original_wr_mf);
+    if (m_config->m_L2_config.m_write_alloc_policy == FETCH_ON_WRITE) {
+      mem_fetch *original_wr_mf = mf->get_original_wr_mf();
+      assert(original_wr_mf);
+      original_wr_mf->set_reply();
+      original_wr_mf->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
+                                 m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+      enqueue_l2_response(original_wr_mf);
+    }
+    m_request_tracker.erase(mf);
+    delete mf;
   }
-  m_request_tracker.erase(mf);
-  delete mf;
 }
 
 void memory_sub_partition::service_dram_to_l2_legacy() {

@@ -320,3 +320,147 @@ TEST_F(TensorMapLayoutTest, SizeIs128) {
 TEST_F(TensorMapLayoutTest, AlignmentIs128) {
   EXPECT_EQ(alignof(tensormap_descriptor_t), 128u);
 }
+
+#include "gpgpu-sim/flash/tma_agu.h"
+
+TEST(TensorMapGather4, AgreesWithIndependentAddressOracleAcrossWidthsAndPackets) {
+  for (unsigned dtype : {TMA_DTYPE_U8, TMA_DTYPE_U16, TMA_DTYPE_U32,
+                         TMA_DTYPE_S64, TMA_DTYPE_F16, TMA_DTYPE_BF16}) {
+    auto tm = make_2d(0x10000, dtype, 64, 1, 128, 8, 1024);
+    tm.fields.elementStrides[0] = tm.fields.elementStrides[1] = 1;
+    const unsigned bytes = tm.get_element_size();
+    for (unsigned packet : {16u, 32u, 64u, 128u}) {
+      for (int x : {-16, 0, 112, 144}) {
+        const int32_t coords[5] = {x, 5, -1, 5, 8};
+        flash_gpgpu_sim::tma_agu_unit_t agu;
+        flash_gpgpu_sim::tma_agu_state_t state;
+        agu.init_tensor_gather4(state, tm, coords);
+        uint64_t address; uint32_t size; unsigned offset = 0;
+        while (agu.gen_next_req(state, address, size, packet)) {
+          ASSERT_GT(size, 0u); ASSERT_LE(size, packet);
+          const unsigned slot = offset / (64 * bytes);
+          const unsigned within = offset % (64 * bytes);
+          ASSERT_LT(slot, 4u);
+          const int64_t row = coords[slot + 1];
+          EXPECT_EQ(address, uint64_t(0x10000 + row * 1024 + int64_t(x) * bytes + within));
+          EXPECT_LE(address % packet + size, packet);
+          for (unsigned i = 0; i < size; i += bytes) {
+            const int column = x + (within + i) / bytes;
+            EXPECT_EQ(state.is_fill_request, row < 0 || row >= 8 || column < 0 || column >= 128);
+          }
+          offset += size;
+        }
+        EXPECT_EQ(offset, 4 * 64 * bytes);
+        EXPECT_TRUE(state.done);
+      }
+    }
+  }
+}
+
+TEST(TensorMapGather4, RejectsUnsupportedDescriptors) {
+  auto tm = make_2d(0x10000, TMA_DTYPE_F16, 64, 1, 128, 8, 256);
+  tm.fields.elementStrides[0] = tm.fields.elementStrides[1] = 1;
+  EXPECT_TRUE(flash_gpgpu_sim::tma_gather4_supported(tm));
+  auto bad = tm; bad.fields.boxDim[1] = 2;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm; bad.fields.interleave = TMA_INTERLEAVE_16B;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm; bad.fields.elementStrides[0] = 2;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm;
+  bad.fields.tensorDataType = 99;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm;
+  bad.fields.swizzle = 99;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+  bad = tm; bad.fields.boxDim[0] = UINT32_MAX;
+  EXPECT_FALSE(flash_gpgpu_sim::tma_gather4_supported(bad));
+}
+
+TEST(TensorMapGather4, FloatConversionStrideAndSwizzlePayload) {
+  // Expected words include tie-to-even, sign-preserving FTZ, NaN and infinity.
+  const uint32_t input[] = {0x3f801000u, 0x3f803000u, 0x80000001u, 0x7f800000u};
+  const uint32_t rounded[] = {0x3f800000u, 0x3f804000u, 0x80000001u,
+                              0x7f800000u};
+  for (unsigned type :
+       {TMA_DTYPE_F32, TMA_DTYPE_F32_FTZ, TMA_DTYPE_TF32, TMA_DTYPE_TF32_FTZ})
+    for (unsigned swizzle = 0; swizzle < 4; ++swizzle)
+      for (unsigned step = 1; step <= 8; ++step) {
+        const unsigned cols = swizzle == 1 ? 8 : swizzle == 2 ? 16 : 32;
+        auto tm = make_2d(0x10000, type, cols, 1, 128, 8, 512);
+        tm.fields.elementStrides[0] = 1;
+        tm.fields.elementStrides[1] = step;
+        tm.fields.swizzle = swizzle;
+        tm.fields.oobFill = TMA_OOB_NAN;
+        const int32_t coords[] = {0, 5, -1, 5, 8};
+        std::vector<uint8_t> tile;
+        ASSERT_TRUE(flash_gpgpu_sim::tma_gather4_load(
+            tm, coords,
+            [&](uint64_t address, void *out, size_t bytes) {
+              EXPECT_EQ(bytes, 4u);
+              EXPECT_GE(address, 0x10000u + 5 * 512);
+              std::memcpy(out, &input[((address - 0x10000) % 512) / 4 % 4], 4);
+              return true;
+            },
+            tile));
+        ASSERT_EQ(tile.size(), cols * 16u);
+        for (unsigned row = 0; row < 4; ++row)
+          for (unsigned col = 0; col < cols; ++col) {
+            uint32_t actual;
+            std::memcpy(&actual, tile.data() + (row * cols + col) * 4, 4);
+            uint32_t expected = input[col % 4];
+            if (type == TMA_DTYPE_TF32 || type == TMA_DTYPE_TF32_FTZ)
+              expected = col % 4 == 2 ? 0x80000000u : rounded[col % 4];
+            if ((type == TMA_DTYPE_F32_FTZ || type == TMA_DTYPE_TF32_FTZ) &&
+                col % 4 == 2)
+              expected = 0x80000000u;
+            if (row == 1 || row == 3)
+              expected = type >= TMA_DTYPE_TF32 ? 0x7fffe000u : 0x7fffffffu;
+            EXPECT_EQ(actual, expected);
+          }
+        for (unsigned base : {0u, 128u, 256u, 896u})
+          for (unsigned offset = 0; offset < 512; offset += 16) {
+            const unsigned group =
+                swizzle ? ((base + offset) / 128) % (1u << swizzle) : 0;
+            EXPECT_EQ(flash_gpgpu_sim::tma_gather4_shared_offset(offset, base,
+                                                                 swizzle),
+                      offset ^ (group * 16));
+          }
+      }
+}
+
+TEST(TensorMapGather4, PackedAddressGeneratorUsesPhysicalBytes) {
+  for (unsigned dtype : {TMA_DTYPE_16U4_ALIGN8B, TMA_DTYPE_16U4_ALIGN16B,
+                         TMA_DTYPE_16U6_ALIGN16B}) {
+    auto tm = make_2d(0x10000, dtype, 128, 1, 512, 8, 1024);
+    tm.fields.elementStrides[0] = tm.fields.elementStrides[1] = 1;
+    const unsigned bits = dtype == TMA_DTYPE_16U6_ALIGN16B ? 6 : 4;
+    for (int x : {-128, 0, 128, 480})
+      for (unsigned packet : {16u, 32u, 64u, 128u}) {
+        const int32_t coords[5] = {x, 5, -1, 5, 8};
+        flash_gpgpu_sim::tma_agu_unit_t agu;
+        flash_gpgpu_sim::tma_agu_state_t state;
+        agu.init_tensor_gather4(state, tm, coords);
+        uint64_t addr;
+        uint32_t size;
+        unsigned total = 0;
+        while (agu.gen_next_req(state, addr, size, packet)) {
+          const unsigned row = total / (128 * bits / 8),
+                         within = total % (128 * bits / 8);
+          ASSERT_LT(row, 4u);
+          ASSERT_GT(size, 0u);
+          EXPECT_EQ(addr, uint64_t(0x10000 + coords[row + 1] * 1024 +
+                                   x * int(bits) / 8 + within));
+          EXPECT_LE(addr % packet + size, packet);
+          for (unsigned b = 0; b < size; ++b) {
+            const int byte = x * int(bits) / 8 + within + b;
+            EXPECT_EQ(state.is_fill_request,
+                      coords[row + 1] < 0 || coords[row + 1] >= 8 || byte < 0 ||
+                          byte >= int(512 * bits / 8));
+          }
+          total += size;
+        }
+        EXPECT_EQ(total, 4 * 128 * bits / 8);
+      }
+  }
+}

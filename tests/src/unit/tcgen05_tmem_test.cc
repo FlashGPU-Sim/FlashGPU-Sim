@@ -319,7 +319,8 @@ TEST(Tcgen05TmemTest, MmaF16KnownPatternNoAccum) {
   std::vector<uint16_t> b(desc.k * desc.n);
   for (uint32_t k = 0; k < desc.k; ++k) {
     for (uint32_t n = 0; n < desc.n; ++n) {
-      b[k * desc.n + n] = tcgen05_f32_to_f16(static_cast<float>(n + 1));
+      // A non-transposed B descriptor is N rows of K elements.
+      b[n * desc.k + k] = tcgen05_f32_to_f16(static_cast<float>(n + 1));
     }
   }
 
@@ -347,4 +348,56 @@ TEST(Tcgen05TmemTest, MmaF16KnownPatternWithAccum) {
   ASSERT_EQ(result.size(), desc.m * desc.n);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result[0]), 18.5f);
   EXPECT_FLOAT_EQ(tcgen05_bits_to_f32(result.back()), 18.5f);
+}
+
+TEST(Tcgen05TmemTest, GroupMetadataAliasesOnePhysicalCtaStorage) {
+  tcgen05_tmem_manager_t manager;
+  const unsigned base = manager.alloc(kScopeGroup2, 64);
+  manager.write_words(kScopeGroup2, base, {7, 11, 13, 17});
+  EXPECT_EQ(manager.read_words(kScope0, base, 4),
+            std::vector<uint32_t>({7, 11, 13, 17}));
+  manager.write_words(kScope0, base + 2, {19});
+  EXPECT_EQ(manager.read_words(kScopeGroup2, base + 2, 1),
+            std::vector<uint32_t>({19}));
+  const unsigned peer = manager.alloc(kScope1, 64);
+  manager.write_words(kScope1, peer, {23});
+  EXPECT_EQ(manager.read_words(kScopeGroup2, base, 1),
+            std::vector<uint32_t>({7}));
+  manager.relinquish_alloc_permit(kScopeGroup2);
+  EXPECT_TRUE(manager.permit_relinquished(kScope0));
+  EXPECT_FALSE(manager.permit_relinquished(kScope1));
+  manager.dealloc(kScope0, base, 64);
+  EXPECT_FALSE(manager.has_allocation(kScopeGroup2, base));
+}
+
+TEST(Tcgen05TmemTest, OutputMasksSelectPhysicalLanesAcrossAccumulatorLayouts) {
+  for (unsigned layout = 0; layout < 4; ++layout) {
+    tcgen05_tmem_manager_t tm;
+    const auto allocation = tm.alloc(kScope0, 32);
+    tm.write_matrix_words(kScope0, allocation,
+                          std::vector<uint32_t>(128 * 32, 7), 128, 32);
+    const bool folded = layout == 3;
+    const unsigned rows = layout == 0 ? 128 : 64;
+    const unsigned base = allocation + (layout == 2 ? (16u << 16) : 0);
+    const uint32_t mask[] = {0x80000001, 0x00010002, 0xffffffff, 0};
+    auto logical = sequence(100, rows * 16);
+    tm.write_accumulator(kScope0, base, logical, rows, 16, folded, mask);
+    // Check the complete physical image, including unused rows/columns.
+    auto actual = tm.read_matrix_words(kScope0, allocation, 128, 32);
+    for (unsigned lane = 0; lane < 128; ++lane)
+      for (unsigned col = 0; col < 32; ++col) {
+        uint32_t expected = 7;
+        const bool selected = layout == 0 || folded ||
+                              (layout == 1 ? lane % 32 < 16 : lane % 32 >= 16);
+        if (selected && col < (folded ? 8u : 16u) &&
+            !(mask[lane / 32] & (1u << (lane % 32)))) {
+          const unsigned row = folded        ? lane % 64
+                               : rows == 128 ? lane
+                                             : (lane / 32) * 16 + lane % 16;
+          expected = 100 + row * 16 + col + (folded ? lane / 64 * 8 : 0);
+        }
+        EXPECT_EQ(actual[lane * 32 + col], expected)
+            << layout << ':' << lane << ':' << col;
+      }
+  }
 }

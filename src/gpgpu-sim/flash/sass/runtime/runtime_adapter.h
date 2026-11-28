@@ -45,6 +45,7 @@ struct runtime_kernel_resources {
   uint32_t static_shared = 0;
   uint32_t local_memory = 0;
   uint32_t stack_size = 0;
+  std::array<uint32_t, 3> required_cluster{};
 };
 
 // A non-empty FLASHGPU_SASS_IR or FLASHGPU_SASS_AUTO selects strict SASS
@@ -85,7 +86,10 @@ load_runtime_kernel_resources(const std::string &sassir_path,
 std::unique_ptr<functional_memory> make_runtime_functional_memory(
     kernel_info_t &launch, ::memory_space *global_memory, architecture arch,
     uint32_t parameter_base, uint32_t parameter_size,
-    const std::vector<kernel_constant_bank> &constant_banks);
+    const std::vector<kernel_constant_bank> &constant_banks,
+    unsigned native_cluster_rank = UINT32_MAX);
+
+::memory_space *runtime_shared_memory(functional_memory &memory);
 
 functional_grid_summary
 execute_runtime_functional_grid(kernel_info_t &launch,

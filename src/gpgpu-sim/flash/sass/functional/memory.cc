@@ -1,3 +1,4 @@
+#include "../../shared_bulk.h"
 #include "../decode/operand_parser.h"
 #include "internal.h"
 
@@ -19,6 +20,43 @@ bool evaluate_constant_address(const address_expression &address,
                                uint64_t &value) {
   value = evaluate_address_terms(address, state, lane);
   return !address.terms.empty();
+}
+
+// ptxas lowers st.bulk.shared to UMEMSETS.64 with size in 8-byte words
+// (the emitted USHF right-shifts the PTX byte count by three). The prefix
+// in nvdisasm's structured spelling is the zero fill value, not a result.
+step_result execute_umemsets(const instruction &inst, warp_state &state,
+                             execution_context &context) {
+  if (!has_typed_operands(inst, 2) || !context.memory ||
+      inst.operands[0].kind != operand_kind::kMemoryAddress ||
+      !inst.operands[0].has_prefix ||
+      inst.operands[0].prefix_kind != operand_kind::kUniformRegister ||
+      inst.operands[0].prefix_index != kZeroUniformRegister ||
+      inst.operands[1].kind != operand_kind::kUniformRegister)
+    return unsupported(inst, "expected zero-filled uniform shared bulk store");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    uint64_t address = 0;
+    const uint64_t bytes =
+        uint64_t(state.read_uniform_register(inst.operands[1].index)) * 8;
+    if (!evaluate_shared_address(inst.operands[0], state, lane, address) ||
+        address % 8 || bytes > 16777216)
+      return unsupported(inst, "invalid shared bulk store extent");
+    if (!flash_gpgpu_sim::zero_shared_bulk(
+            address, bytes, [&](uint64_t at, const void *data, size_t size) {
+              return context.memory->write(memory_space::kShared, at, data,
+                                           size);
+            }))
+      return memory_fault(inst, memory_space::kShared, address, bytes);
+    if (bytes)
+      context.record_memory_access(lane, memory_space::kShared, address, bytes,
+                                   true);
+    break; // One uniform operation, irrespective of the active lane count.
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
 }
 
 step_result execute_lds(const instruction &inst, warp_state &state,
@@ -45,7 +83,7 @@ step_result execute_lds(const instruction &inst, warp_state &state,
                          : u8                       ? 1
                          : inst.opcode == "LDS.U16" ? 2
                                                     : 4;
-    if (!evaluate_shared_address(*address, state, lane, location))
+    if (!evaluate_shared_address(*address, state, lane, location, &context))
       return unsupported(inst, "unsupported shared-load address");
     context.record_memory_access(lane, memory_space::kShared, location, bytes,
                                  false);
@@ -82,7 +120,7 @@ step_result execute_sts(const instruction &inst, warp_state &state,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location))
+    if (!evaluate_shared_address(*address, state, lane, location, &context))
       return unsupported(inst, "unsupported shared-store address");
     context.record_memory_access(lane, memory_space::kShared, location, bytes,
                                  true);
@@ -289,194 +327,6 @@ step_result execute_ldcu(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-step_result execute_ldg(const instruction &native, warp_state &state,
-                        execution_context &context) {
-  instruction inst = native;
-  if (!normalize_ldg_operands(inst))
-    return unsupported(inst, "invalid direct LDG address");
-  if (!has_typed_operands(inst, 2))
-    return unsupported(inst, "expected two typed operands");
-  const operand *destination = get_operand(inst, 0, operand_kind::kRegister);
-  const operand *address =
-      get_operand(inst, 1, operand_kind::kDescriptorAddress);
-  const bool direct = inst.operands[1].kind == operand_kind::kMemoryAddress;
-  if (direct)
-    address = &inst.operands[1];
-  if (destination == nullptr || address == nullptr)
-    return unsupported(inst, "unsupported global-load operand form");
-  if (context.memory == nullptr)
-    return unsupported(inst, "no functional memory is attached");
-  if (!direct)
-    (void)state.read_uniform_register(address->descriptor_register);
-  const bool u8 = inst.opcode == "LDG.E.U8";
-  const bool u16 =
-      inst.opcode == "LDG.E.U16" || inst.opcode == "LDG.E.U16.CONSTANT";
-  const bool wide = inst.opcode == "LDG.E.64";
-  const bool vector128 =
-      inst.opcode == "LDG.E.128" || inst.opcode == "LDG.E.128.CONSTANT";
-  if (wide && destination->index != kZeroRegister &&
-      destination->index > kZeroRegister - 1)
-    return unsupported(inst, "LDG.E.64 register range is out of bounds");
-  if (vector128 && destination->index != kZeroRegister &&
-      destination->index > kZeroRegister - 3)
-    return unsupported(inst, "LDG.E.128 register range is out of bounds");
-  const size_t bytes = vector128 ? 16 : wide ? 8 : u16 ? 2 : u8 ? 1 : 4;
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if ((state.active_mask & (1u << lane)) == 0 ||
-        !lane_executes(inst, state, lane))
-      continue;
-    uint64_t location = 0;
-    if (direct) {
-      if (!evaluate_address(*address, state, lane, location))
-        return unsupported(inst, "invalid direct global-load address");
-    } else {
-      location = read_register_pair(state, lane, address->address_register) +
-                 static_cast<uint64_t>(address->address_offset);
-    }
-    context.record_memory_access(lane, memory_space::kGlobal, location, bytes,
-                                 false);
-    std::array<uint32_t, 4> value{};
-    if (!context.memory->read(memory_space::kGlobal, location, value.data(),
-                              bytes))
-      return memory_fault(inst, memory_space::kGlobal, location, bytes);
-    const unsigned words = vector128 ? 4 : wide ? 2 : 1;
-    if (destination->index != kZeroRegister)
-      for (unsigned word = 0; word < words; ++word)
-        state.write_register(lane, destination->index + word, value[word]);
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
-step_result execute_stg(const instruction &inst, warp_state &state,
-                        execution_context &context) {
-  if (!has_typed_operands(inst, 2))
-    return unsupported(inst, "expected two typed operands");
-  const operand *address =
-      get_operand(inst, 0, operand_kind::kDescriptorAddress);
-  const operand *source = get_operand(inst, 1, operand_kind::kRegister);
-  if (address == nullptr || source == nullptr)
-    return unsupported(inst, "unsupported global-store operand form");
-  if (context.memory == nullptr)
-    return unsupported(inst, "no functional memory is attached");
-  (void)state.read_uniform_register(address->descriptor_register);
-  const bool vector128 = inst.opcode == "STG.E.128";
-  const bool wide = inst.opcode == "STG.E.64";
-  const bool u16 = inst.opcode == "STG.E.U16";
-  if (vector128 && source->index != kZeroRegister &&
-      source->index > kZeroRegister - 3)
-    return unsupported(inst, "STG.E.128 register range is out of bounds");
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if ((state.active_mask & (1u << lane)) == 0 ||
-        !lane_executes(inst, state, lane))
-      continue;
-    const uint64_t location =
-        read_register_pair(state, lane, address->address_register) +
-        static_cast<uint64_t>(address->address_offset);
-    std::array<uint32_t, 4> value{};
-    const unsigned words = vector128 ? 4 : wide ? 2 : 1;
-    for (unsigned word = 0; word < words; ++word)
-      value[word] = source->index == kZeroRegister
-                        ? 0
-                        : state.read_register(lane, source->index + word);
-    const size_t bytes = u16 ? 2 : words * sizeof(uint32_t);
-    context.record_memory_access(lane, memory_space::kGlobal, location, bytes,
-                                 true);
-    if (!context.memory->write(memory_space::kGlobal, location, value.data(),
-                               bytes))
-      return memory_fault(inst, memory_space::kGlobal, location, bytes);
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
-bool evaluate_generic_descriptor_address(const operand &address,
-                                         const warp_state &state, unsigned lane,
-                                         memory_space &space,
-                                         uint64_t &location) {
-  if (address.kind != operand_kind::kDescriptorAddress ||
-      address.address_register >= kVectorRegisters - 1)
-    return false;
-
-  const uint32_t descriptor =
-      state.read_uniform_register(address.descriptor_register);
-  const uint32_t high = state.read_register(lane, address.address_register + 1);
-  const uint64_t base =
-      read_register_pair(state, lane, address.address_register);
-  if (address.address_offset < 0) {
-    const uint64_t magnitude =
-        static_cast<uint64_t>(-(address.address_offset + 1)) + 1;
-    if (base < magnitude)
-      return false;
-    location = base - magnitude;
-  } else {
-    const uint64_t offset = static_cast<uint64_t>(address.address_offset);
-    if (base > std::numeric_limits<uint64_t>::max() - offset)
-      return false;
-    location = base + offset;
-  }
-
-  // Generic addresses with a null descriptor and a zero high word use the
-  // flat shared-memory window.  Compiler-generated global accesses carry the
-  // launch descriptor in UR and/or a full 64-bit pointer in the address pair.
-  space = descriptor == 0 && high == 0 ? memory_space::kShared
-                                       : memory_space::kGlobal;
-  return space != memory_space::kShared ||
-         location <= std::numeric_limits<uint32_t>::max();
-}
-
-step_result execute_generic_memory(const instruction &inst, warp_state &state,
-                                   execution_context &context) {
-  if (!has_typed_operands(inst, 2) || context.memory == nullptr)
-    return unsupported(inst, "invalid generic memory operation");
-  const bool load = inst.opcode.rfind("LD.E", 0) == 0;
-  const bool vector128 = inst.opcode.find(".128") != std::string::npos;
-  const bool u16 = inst.opcode.find(".U16") != std::string::npos;
-  const bool u8 = inst.opcode.find(".U8") != std::string::npos;
-  const operand *data =
-      get_operand(inst, load ? 0 : 1, operand_kind::kRegister);
-  const operand *address =
-      get_operand(inst, load ? 1 : 0, operand_kind::kDescriptorAddress);
-  if (data == nullptr || address == nullptr ||
-      address->address_register >= kVectorRegisters - 1)
-    return unsupported(inst, "unsupported generic-memory operands");
-  if (vector128 && data->index != kZeroRegister &&
-      data->index > kZeroRegister - 3)
-    return unsupported(inst, "generic .128 register range is out of bounds");
-
-  const unsigned words = vector128 ? 4 : 1;
-  const size_t bytes = u16 ? 2 : u8 ? 1 : words * sizeof(uint32_t);
-
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if ((state.active_mask & (1u << lane)) == 0 ||
-        !lane_executes(inst, state, lane))
-      continue;
-    uint64_t location = 0;
-    memory_space space = memory_space::kShared;
-    if (!evaluate_generic_descriptor_address(*address, state, lane, space,
-                                             location))
-      return unsupported(inst, "invalid generic address");
-    context.record_memory_access(lane, space, location, bytes, !load);
-    std::array<uint32_t, 4> value{};
-    if (load) {
-      if (!context.memory->read(space, location, value.data(), bytes))
-        return memory_fault(inst, space, location, bytes);
-      if (data->index != kZeroRegister)
-        for (unsigned word = 0; word < words; ++word)
-          state.write_register(lane, data->index + word, value[word]);
-    } else {
-      for (unsigned word = 0; word < words; ++word)
-        value[word] = data->index == kZeroRegister
-                          ? 0
-                          : state.read_register(lane, data->index + word);
-      if (!context.memory->write(space, location, value.data(), bytes))
-        return memory_fault(inst, space, location, bytes);
-    }
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
 step_result execute_ldgsts(const instruction &native, warp_state &state,
                            execution_context &context) {
   instruction inst = native;
@@ -519,7 +369,8 @@ step_result execute_ldgsts(const instruction &native, warp_state &state,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t shared_address = 0;
-    if (!evaluate_shared_address(*destination, state, lane, shared_address))
+    if (!evaluate_shared_address(*destination, state, lane, shared_address,
+                                 &context))
       return unsupported(inst, "unsupported LDGSTS shared address");
     uint64_t global_address = 0;
     if (direct) {
@@ -630,58 +481,13 @@ step_result execute_atomg_exchange(const instruction &inst, warp_state &state,
     const uint32_t value = state.read_register(lane, source->index);
     context.record_memory_access(lane, memory_space::kGlobal, location,
                                  sizeof(value), false);
-    std::lock_guard<std::mutex> lock(global_atomic_mutex);
+    std::lock_guard<std::mutex> lock(global_rmw_mutex());
     if (!context.memory->read(memory_space::kGlobal, location, &discarded,
                               sizeof(discarded)) ||
         !context.memory->write(memory_space::kGlobal, location, &value,
                                sizeof(value)))
       return memory_fault(inst, memory_space::kGlobal, location,
                           sizeof(uint32_t));
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
-step_result execute_atomg_add(const instruction &inst, warp_state &state,
-                              execution_context &context) {
-  if (!has_typed_operands(inst, 4))
-    return unsupported(inst, "expected predicate, old value, address, source");
-  const operand *predicate = get_operand(inst, 0, operand_kind::kPredicate);
-  const operand *destination = get_operand(inst, 1, operand_kind::kRegister);
-  const operand *address =
-      get_operand(inst, 2, operand_kind::kDescriptorAddress);
-  const operand *source = get_operand(inst, 3, operand_kind::kRegister);
-  if (predicate == nullptr || predicate->index != kTruePredicate ||
-      predicate->negated || destination == nullptr || address == nullptr ||
-      source == nullptr || address->address_register >= kVectorRegisters - 1)
-    return unsupported(inst, "unsupported ATOMG.ADD operand form");
-  if (context.memory == nullptr)
-    return unsupported(inst, "no functional memory is attached");
-  (void)state.read_uniform_register(address->descriptor_register);
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if ((state.active_mask & (1u << lane)) == 0 ||
-        !lane_executes(inst, state, lane))
-      continue;
-    const uint64_t location =
-        read_register_pair(state, lane, address->address_register) +
-        static_cast<uint64_t>(address->address_offset);
-    if ((location % alignof(uint32_t)) != 0)
-      return unsupported(inst, "ATOMG.ADD address must be 4-byte aligned");
-    std::lock_guard<std::mutex> lock(global_atomic_mutex);
-    uint32_t old_value = 0;
-    if (!context.memory->read(memory_space::kGlobal, location, &old_value,
-                              sizeof(old_value)))
-      return memory_fault(inst, memory_space::kGlobal, location,
-                          sizeof(old_value));
-    const uint32_t new_value =
-        old_value + state.read_register(lane, source->index);
-    context.record_memory_access(lane, memory_space::kGlobal, location,
-                                 sizeof(new_value), false);
-    if (!context.memory->write(memory_space::kGlobal, location, &new_value,
-                               sizeof(new_value)))
-      return memory_fault(inst, memory_space::kGlobal, location,
-                          sizeof(new_value));
-    state.write_register(lane, destination->index, old_value);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -706,7 +512,7 @@ step_result execute_atoms_popc_increment(const instruction &inst,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location) ||
+    if (!evaluate_shared_address(*address, state, lane, location, &context) ||
         (location % alignof(uint32_t)) != 0)
       return unsupported(inst, "invalid ATOMS.POPC shared address");
     context.record_memory_access(lane, memory_space::kShared, location,
@@ -745,7 +551,7 @@ step_result execute_atoms_add(const instruction &inst, warp_state &state,
         !lane_executes(inst, state, lane))
       continue;
     uint64_t location = 0;
-    if (!evaluate_shared_address(*address, state, lane, location) ||
+    if (!evaluate_shared_address(*address, state, lane, location, &context) ||
         (location % alignof(uint32_t)) != 0)
       return unsupported(inst, "invalid ATOMS.ADD shared address");
     uint32_t value = 0;
@@ -753,7 +559,16 @@ step_result execute_atoms_add(const instruction &inst, warp_state &state,
                               sizeof(value)))
       return memory_fault(inst, memory_space::kShared, location, sizeof(value));
     const uint32_t old_value = value;
-    value += state.read_register(lane, source->index);
+    if (inst.opcode == "ATOMS.OR")
+      value |= state.read_register(lane, source->index);
+    else if (inst.opcode == "ATOMS.AND")
+      value &= state.read_register(lane, source->index);
+    else if (inst.opcode == "ATOMS.XOR")
+      value ^= state.read_register(lane, source->index);
+    else if (inst.opcode == "ATOMS.EXCH")
+      value = state.read_register(lane, source->index);
+    else
+      value += state.read_register(lane, source->index);
     if (!context.memory->write(memory_space::kShared, location, &value,
                                sizeof(value)))
       return memory_fault(inst, memory_space::kShared, location, sizeof(value));
@@ -781,12 +596,15 @@ step_result execute_functional_fence(const instruction &inst, warp_state &state,
            inst.opcode == "UTMACCTL.IV" || inst.opcode == "UTMACCTL.PF")
     valid = has_typed_operands(inst, 1) &&
             inst.operands[0].kind == operand_kind::kMemoryAddress;
-  else if (inst.opcode == "CCTL.IVALL")
+  else if (inst.opcode == "ERRBAR" || inst.opcode == "CGAERRBAR" ||
+           inst.opcode == "CCTL.IVALL")
     valid = has_typed_operands(inst, 0);
-  else if (inst.opcode == "FENCE.VIEW.ASYNC.S")
+  else if (inst.opcode == "FENCE.VIEW.ASYNC.S" ||
+           inst.opcode == "FENCE.VIEW.ASYNC.T")
     valid = has_typed_operands(inst, 0);
   else if (inst.opcode == "MEMBAR.ALL.CTA" || inst.opcode == "MEMBAR.ALL.GPU" ||
-           inst.opcode == "MEMBAR.SC.CTA")
+           inst.opcode == "MEMBAR.SC.CTA" || inst.opcode == "MEMBAR.ALL.SYS" ||
+           inst.opcode == "MEMBAR.SC.GPU" || inst.opcode == "MEMBAR.SC.SYS")
     valid = has_typed_operands(inst, 0);
   else if (inst.opcode == "LDGDEPBAR")
     valid = has_typed_operands(inst, 0);
@@ -801,6 +619,8 @@ step_result execute_functional_fence(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_memory_semantics(frontend &target) {
+  target.register_semantics("UMEMSETS.64", execute_umemsets);
+  target.register_semantics("FENCE.VIEW.ASYNC.T", execute_functional_fence);
   for (const char *opcode :
        {"LDGSTS.E", "LDGSTS.E.64", "LDGSTS.E.128", "LDGSTS.E.ZFILL",
         "LDGSTS.E.64.ZFILL", "LDGSTS.E.128.ZFILL", "LDGSTS.E.LTC128B",
@@ -835,31 +655,20 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("ULDC.64", execute_ldcu);
   target.register_semantics("ULDC.128", execute_ldcu);
   target.register_semantics("ULDC.U8", execute_ldcu);
-  target.register_semantics("LDG.E", execute_ldg);
-  target.register_semantics("LDG.E.STRONG.GPU", execute_ldg);
-  target.register_semantics("LDG.E.CONSTANT", execute_ldg);
-  target.register_semantics("LDG.E.U8", execute_ldg);
-  target.register_semantics("LDG.E.U16", execute_ldg);
-  target.register_semantics("LDG.E.U16.CONSTANT", execute_ldg);
-  target.register_semantics("LDG.E.64", execute_ldg);
-  target.register_semantics("LDG.E.128", execute_ldg);
-  target.register_semantics("LDG.E.128.CONSTANT", execute_ldg);
-  target.register_semantics("STG.E", execute_stg);
-  target.register_semantics("STG.E.U16", execute_stg);
-  target.register_semantics("STG.E.64", execute_stg);
-  target.register_semantics("STG.E.128", execute_stg);
-  target.register_semantics("LD.E", execute_generic_memory);
-  target.register_semantics("LD.E.U16.STRONG.SYS", execute_generic_memory);
-  target.register_semantics("LD.E.128", execute_generic_memory);
-  target.register_semantics("ST.E", execute_generic_memory);
-  target.register_semantics("ST.E.128", execute_generic_memory);
+  register_global_memory_semantics(target);
   target.register_semantics("LDGSTS.E.BYPASS.LTC128B.128", execute_ldgsts);
   target.register_semantics("LDGSTS.E.BYPASS.128", execute_ldgsts);
   target.register_semantics("LDGSTS.E.BYPASS.128.ZFILL", execute_ldgsts);
   target.register_semantics("ATOMG.E.EXCH.STRONG.GPU", execute_atomg_exchange);
-  target.register_semantics("ATOMG.E.ADD.STRONG.GPU", execute_atomg_add);
+  register_global_reduce_semantics(target);
   target.register_semantics("ATOMS.POPC.INC.32", execute_atoms_popc_increment);
   target.register_semantics("ATOMS.ADD", execute_atoms_add);
+  target.register_semantics("ATOMS.OR", execute_atoms_add);
+  target.register_semantics("ATOMS.AND", execute_atoms_add);
+  target.register_semantics("ATOMS.XOR", execute_atoms_add);
+  target.register_semantics("ATOMS.EXCH", execute_atoms_add);
+  target.register_semantics("ERRBAR", execute_functional_fence);
+  target.register_semantics("CGAERRBAR", execute_functional_fence);
   target.register_semantics("DEPBAR", execute_functional_fence);
   target.register_semantics("DEPBAR.LE", execute_functional_fence);
   target.register_semantics("CCTL.E.C.LDCU.IV.DEEP", execute_functional_fence);
@@ -870,6 +679,9 @@ void register_memory_semantics(frontend &target) {
   target.register_semantics("MEMBAR.ALL.CTA", execute_functional_fence);
   target.register_semantics("MEMBAR.ALL.GPU", execute_functional_fence);
   target.register_semantics("MEMBAR.SC.CTA", execute_functional_fence);
+  target.register_semantics("MEMBAR.ALL.SYS", execute_functional_fence);
+  target.register_semantics("MEMBAR.SC.GPU", execute_functional_fence);
+  target.register_semantics("MEMBAR.SC.SYS", execute_functional_fence);
   target.register_semantics("LDGDEPBAR", execute_functional_fence);
   target.register_semantics("ACQBULK", execute_functional_fence);
 }

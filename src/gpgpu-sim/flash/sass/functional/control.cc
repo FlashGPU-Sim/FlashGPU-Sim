@@ -18,6 +18,16 @@ namespace {
 
 // PTX ISA 9.7.13 plus warp/CTA control operations.
 
+step_result execute_gather_cluster_barrier(const instruction &inst,
+                                           warp_state &state,
+                                           execution_context &context) {
+  if (!has_typed_operands(inst, 0) || inst.has_guard || !context.cluster ||
+      !context.architectural_cycle_valid)
+    return unsupported(inst, "cluster barrier requires common timing runtime");
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
 step_result execute_nop(const instruction &inst, warp_state &state,
                         execution_context &) {
   if (!has_typed_operands(inst, 0))
@@ -979,6 +989,86 @@ step_result execute_cta_barrier_deferred(const instruction &inst,
   return {step_status::kAdvanced, {}};
 }
 
+step_result execute_cta_barrier_reduction(const instruction &inst,
+                                          warp_state &state,
+                                          execution_context &context) {
+  const size_t n = inst.operands.size();
+  if ((!has_typed_operands(inst, 2) && !has_typed_operands(inst, 3)) ||
+      !context.cta || inst.operands[0].kind != operand_kind::kImmediate ||
+      inst.operands[0].immediate < 0 ||
+      inst.operands[0].immediate >= kCtaBarrierSlots ||
+      inst.operands[n - 1].kind != operand_kind::kPredicate)
+    return unsupported(inst,
+                       "expected barrier id, optional count and predicate");
+  const unsigned id = inst.operands[0].immediate;
+  const auto generation = context.cta->generation(id);
+  const auto op =
+      inst.opcode == "BAR.RED.AND.DEFER_BLOCKING"  ? cta_reduction_op::bit_and
+      : inst.opcode == "BAR.RED.OR.DEFER_BLOCKING" ? cta_reduction_op::bit_or
+                                                   : cta_reduction_op::popcount;
+  bool executes = false;
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane)
+    executes |=
+        (state.active_mask & (1u << lane)) && lane_executes(inst, state, lane);
+  if (executes && !context.cta->can_record_barrier_reduction(
+                      id, generation, context.warp_id, op))
+    return unsupported(inst, "inconsistent or duplicate CTA reduction arrival");
+  cta_reduction_accumulator warp_value;
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    bool value;
+    if (!read_predicate_operand(inst.operands.back(), state, lane, value))
+      return unsupported(inst, "unsupported CTA reduction predicate");
+    warp_value.accumulate(op, value);
+  }
+  instruction barrier = inst;
+  barrier.operands.pop_back();
+  const auto result = execute_cta_barrier_deferred(barrier, state, context);
+  if (result.status == step_status::kAdvanced &&
+      context.named_barrier_effect.valid)
+    context.cta->record_barrier_reduction(id, generation, context.warp_id,
+                                          warp_value.value(), op);
+  return result;
+}
+
+step_result execute_barrier_result(const instruction &inst, warp_state &state,
+                                   execution_context &context) {
+  const bool integer = has_typed_operands(inst, 1) &&
+                       inst.operands[0].kind == operand_kind::kRegister;
+  const bool predicate = has_typed_operands(inst, 2) &&
+                         inst.operands[0].kind == operand_kind::kRegister &&
+                         inst.operands[0].index == kZeroRegister &&
+                         inst.operands[1].kind == operand_kind::kPredicate &&
+                         !inst.operands[1].negated;
+  if ((!integer && !predicate) || !context.cta)
+    return unsupported(
+        inst, "expected integer count or discarded integer and predicate");
+  bool executes = false;
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane)
+    executes |=
+        (state.active_mask & (1u << lane)) && lane_executes(inst, state, lane);
+  if (!executes) {
+    advance(inst, state);
+    return {step_status::kAdvanced, {}};
+  }
+  uint32_t value;
+  cta_reduction_op op;
+  if (!context.cta->read_barrier_reduction(context.warp_id, value, op))
+    return unsupported(inst, "no completed CTA reduction result");
+  if (integer != (op == cta_reduction_op::popcount))
+    return unsupported(inst, "B2R result type does not match the reduction");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    if (integer)
+      state.write_register(lane, inst.operands[0].index, value);
+    else
+      state.write_predicate(lane, inst.operands[1].index, value != 0);
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
 step_result execute_exit(const instruction &inst, warp_state &state,
                          execution_context &) {
   const bool has_operand_predicate = has_typed_operands(inst, 1);
@@ -1069,7 +1159,12 @@ step_result execute_exit(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_control_semantics(frontend &target) {
+  target.register_semantics("UCGABAR_ARV", execute_gather_cluster_barrier);
+  target.register_semantics("UCGABAR_WAIT", execute_gather_cluster_barrier);
+
   target.register_semantics("NOP", execute_nop);
+  // PREEXIT prepares exit but must not retire lanes or bypass the final EXIT.
+  target.register_semantics("PREEXIT", execute_nop);
   target.register_semantics("YIELD", execute_nop);
   target.register_semantics("NANOSLEEP", execute_nanosleep);
   target.register_semantics("NANOSLEEP.SYNCS", execute_nanosleep);
@@ -1107,6 +1202,11 @@ void register_control_semantics(frontend &target) {
   target.register_semantics("BAR.ARV", execute_cta_barrier_arrive);
   target.register_semantics("BAR.SYNC.DEFER_BLOCKING",
                             execute_cta_barrier_deferred);
+  for (const char *op :
+       {"BAR.RED.AND.DEFER_BLOCKING", "BAR.RED.OR.DEFER_BLOCKING",
+        "BAR.RED.POPC.DEFER_BLOCKING"})
+    target.register_semantics(op, execute_cta_barrier_reduction);
+  target.register_semantics("B2R.RESULT", execute_barrier_result);
   target.register_semantics("EXIT", execute_exit);
 }
 

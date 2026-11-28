@@ -1,121 +1,24 @@
+#include "../../bfloat_arithmetic.h"
+#include "../../bfloat_minmax.h"
+#include "../../fp32_fma.h"
+#include "../../half_sign.h"
+#include "../decode/fp32x2_operand.h"
+#include "../decode/operand_parser.h"
+#include "../decode/scaled_unpack_operand.h"
 #include "internal.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <sstream>
 
 namespace flash_gpgpu_sim {
 namespace sass {
 namespace functional_detail {
 namespace {
 
-// PTX ISA 9.7.3-9.7.5: floating-point and mixed-precision conversion.
-
-float flush_subnormal(float value) {
-  return std::fpclassify(value) == FP_SUBNORMAL ? std::copysign(0.0f, value)
-                                                : value;
-}
-
-step_result execute_i2f(const instruction &inst, warp_state &state,
-                        execution_context &) {
-  const bool uniform = inst.opcode.rfind("UI2F.", 0) == 0;
-  if (!has_typed_operands(inst, 2) ||
-      (uniform && inst.operands[0].kind != operand_kind::kUniformRegister) ||
-      (!uniform && inst.operands[0].kind != operand_kind::kRegister) ||
-      (uniform && (inst.operands[1].kind == operand_kind::kRegister ||
-                   (inst.has_guard &&
-                    inst.guard.kind != operand_kind::kUniformPredicate))))
-    return unsupported(inst, "unsupported I2F operand form");
-  const auto convert = [&](unsigned lane, uint32_t &result_bits) {
-    if (inst.opcode == "I2F.U64.RP" || inst.opcode == "UI2F.U64.RP") {
-      uint64_t source = 0;
-      if (!read_u64_operand(inst.operands[1], state, lane, source))
-        return false;
-      const long double exact = static_cast<long double>(source);
-      float result = static_cast<float>(exact);
-      if (static_cast<long double>(result) < exact)
-        result = std::nextafter(result, INFINITY);
-      result_bits = float_bits(result);
-      return true;
-    }
-    uint32_t source = 0;
-    if (!read_u32_operand(inst.operands[1], state, lane, source))
-      return false;
-    if (inst.opcode == "I2F.U8" || inst.opcode == "UI2F.U8") {
-      result_bits =
-          float_bits(static_cast<float>(static_cast<uint8_t>(source)));
-      return true;
-    }
-    if (inst.opcode == "I2F.U16" || inst.opcode == "I2F.U16.RZ" ||
-        inst.opcode == "UI2F.U16" || inst.opcode == "UI2F.U16.RZ") {
-      result_bits =
-          float_bits(static_cast<float>(static_cast<uint16_t>(source)));
-      return true;
-    }
-    const bool unsigned_source =
-        inst.opcode == "I2F.U32.RP" || inst.opcode == "UI2F.U32.RP";
-    const double exact =
-        unsigned_source ? static_cast<double>(source)
-                        : static_cast<double>(static_cast<int32_t>(source));
-    float result = static_cast<float>(exact);
-    if (static_cast<double>(result) < exact)
-      result = std::nextafter(result, INFINITY);
-    result_bits = float_bits(result);
-    return true;
-  };
-  if (uniform) {
-    if (any_lane_executes(inst, state)) {
-      uint32_t result = 0;
-      if (!convert(0, result))
-        return unsupported(inst, "unsupported UI2F source");
-      state.write_uniform_register(inst.operands[0].index, result);
-    }
-  } else {
-    for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-      if ((state.active_mask & (1u << lane)) == 0 ||
-          !lane_executes(inst, state, lane))
-        continue;
-      uint32_t result = 0;
-      if (!convert(lane, result))
-        return unsupported(inst, "unsupported I2F source");
-      state.write_register(lane, inst.operands[0].index, result);
-    }
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
-step_result execute_i2fp_f32(const instruction &inst, warp_state &state,
-                             execution_context &) {
-  if (!has_typed_operands(inst, 2) ||
-      inst.operands[0].kind != operand_kind::kRegister)
-    return unsupported(inst, "unsupported I2FP.F32 operand form");
-  const bool signed_source = inst.opcode.find(".S32") != std::string::npos;
-  const bool round_to_zero =
-      inst.opcode.size() >= 3 &&
-      inst.opcode.compare(inst.opcode.size() - 3, 3, ".RZ") == 0;
-  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if ((state.active_mask & (1u << lane)) == 0 ||
-        !lane_executes(inst, state, lane))
-      continue;
-    uint32_t source = 0;
-    if (!read_u32_operand(inst.operands[1], state, lane, source))
-      return unsupported(inst, "unsupported I2FP.F32 source");
-    const double exact = signed_source
-                             ? static_cast<double>(static_cast<int32_t>(source))
-                             : static_cast<double>(source);
-    float result = static_cast<float>(exact);
-    if (round_to_zero) {
-      const double rounded = static_cast<double>(result);
-      if ((exact > 0.0 && rounded > exact) || (exact < 0.0 && rounded < exact))
-        result = std::nextafter(result, 0.0f);
-    }
-    state.write_register(lane, inst.operands[0].index, float_bits(result));
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
+// Scalar and packed floating-point arithmetic, comparisons and SFU operations.
 
 step_result execute_mufu_rcp(const instruction &inst, warp_state &state,
                              execution_context &) {
@@ -140,108 +43,89 @@ step_result execute_mufu_rcp(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
-step_result execute_f2i(const instruction &inst, warp_state &state,
-                        execution_context &) {
-  const bool uniform = inst.opcode.rfind("UF2I.", 0) == 0;
-  if (!has_typed_operands(inst, 2) ||
-      (uniform && inst.operands[0].kind != operand_kind::kUniformRegister) ||
-      (!uniform && inst.operands[0].kind != operand_kind::kRegister) ||
-      (uniform && (inst.operands[1].kind == operand_kind::kRegister ||
-                   (inst.has_guard &&
-                    inst.guard.kind != operand_kind::kUniformPredicate))))
-    return unsupported(inst, "unsupported F2I operand form");
-  const auto convert = [&](unsigned lane, uint32_t &result) {
-    float source = 0.0f;
-    if (!read_f32_operand(inst.operands[1], state, lane, source))
-      return false;
-    if (std::fpclassify(source) == FP_SUBNORMAL)
-      source = 0.0f;
-    result = 0;
-    if (!std::isnan(source) && source > 0.0f) {
-      constexpr double kUint32Limit = 4294967296.0;
-      result = static_cast<double>(source) >= kUint32Limit
-                   ? 0xffffffffu
-                   : static_cast<uint32_t>(source);
-    }
-    return true;
-  };
-  if (uniform) {
-    if (any_lane_executes(inst, state)) {
-      uint32_t result = 0;
-      if (!convert(0, result))
-        return unsupported(inst, "unsupported UF2I source");
-      state.write_uniform_register(inst.operands[0].index, result);
-    }
-  } else {
-    for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-      if ((state.active_mask & (1u << lane)) == 0 ||
-          !lane_executes(inst, state, lane))
-        continue;
-      uint32_t result = 0;
-      if (!convert(lane, result))
-        return unsupported(inst, "unsupported F2I source");
-      state.write_register(lane, inst.operands[0].index, result);
-    }
-  }
-  advance(inst, state);
-  return {step_status::kAdvanced, {}};
-}
-
-step_result execute_f2fp_pack_ab(const instruction &inst, warp_state &state,
-                                 execution_context &) {
-  if (!has_typed_operands(inst, 3))
-    return unsupported(inst, "expected destination and two FP32 sources");
-  const operand *destination = get_operand(inst, 0, operand_kind::kRegister);
-  if (destination == nullptr)
-    return unsupported(inst, "packed FP16 destination must be a register");
+step_result execute_fp32x2(const instruction &inst, warp_state &state,
+                           execution_context &) {
+  // Keep these native type selectors opaque to ordinary scalar handlers.
+  // A source independently selects a scalar broadcast or consecutive pair.
+  const bool fused = inst.opcode == "FFMA2" || inst.opcode == "FFMA2.FTZ";
+  const bool multiply = inst.opcode == "FMUL2" || inst.opcode == "FMUL2.FTZ";
+  const bool ftz = inst.opcode.find(".FTZ") != std::string::npos;
+  const unsigned count = fused ? 3 : 2;
+  if (inst.operands.size() != count + 1 ||
+      inst.operands[0].kind != operand_kind::kRegister ||
+      inst.operands[0].index >= kZeroRegister - 1)
+    return unsupported(inst, "unsupported FP32x2 destination");
+  fp32x2_source sources[3];
+  for (unsigned i = 0; i < count; ++i)
+    if (!decode_fp32x2_source(inst.operands[i + 1].text, sources[i]))
+      return unsupported(inst, "unsupported FP32x2 source selector");
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-    if ((state.active_mask & (1u << lane)) == 0 ||
+    if (!(state.active_mask & (1u << lane)) ||
         !lane_executes(inst, state, lane))
       continue;
-    float a = 0.0f;
-    float b = 0.0f;
-    if (!read_f32_operand(inst.operands[1], state, lane, a) ||
-        !read_f32_operand(inst.operands[2], state, lane, b))
-      return unsupported(inst, "unsupported packed FP16 source");
-    // PACK_AB places B in the low halfword and A in the high halfword.
-    const uint32_t packed =
-        float_half_rn(float_bits(b)) |
-        (static_cast<uint32_t>(float_half_rn(float_bits(a))) << 16);
-    state.write_register(lane, destination->index, packed);
+    float values[3][2];
+    // Read both results' sources before writing an aliased destination pair.
+    for (unsigned i = 0; i < count; ++i)
+      for (unsigned word = 0; word < 2; ++word) {
+        operand source = sources[i].value;
+        source.index +=
+            sources[i].paired ? (sources[i].reversed ? 1 - word : word) : 0;
+        if (!read_f32_operand(source, state, lane, values[i][word]))
+          return unsupported(inst, "unsupported FP32x2 source value");
+      }
+    for (unsigned word = 0; word < 2; ++word) {
+      if (ftz)
+        for (unsigned i = 0; i < count; ++i)
+          values[i][word] = flush_subnormal(values[i][word]);
+      float result =
+          fused ? std::fma(values[0][word], values[1][word], values[2][word])
+          : multiply ? values[0][word] * values[1][word]
+                     : values[0][word] + values[1][word];
+      if (ftz)
+        result = flush_subnormal(result);
+      state.write_register(lane, inst.operands[0].index + word,
+                           float_bits(result));
+    }
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
 }
 
-// FP32 products are exact in FP64. TwoSum retains the addition residual,
-// including tiny addends lost by a plain double sum. No host rounding-mode
-// mutation is needed, so concurrent simulator threads remain independent.
-float directed_fma(float a, float b, float c, const std::string &opcode) {
-  if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(c))
-    return std::fma(a, b, c);
-  const double product = static_cast<double>(a) * b;
-  const double sum = product + static_cast<double>(c);
-  const double recovered = sum - product;
-  const double residual = (product - (sum - recovered)) + (c - recovered);
-  const bool down = opcode == "FFMA.RM" || opcode == "FFMA.FTZ.RM";
-  const bool up = opcode == "FFMA.RP";
-  if (sum == 0.0 && residual == 0.0) {
-    const bool product_negative = std::signbit(a) != std::signbit(b);
-    const bool both_zero = product == 0.0 && c == 0.0f;
-    const bool negative = both_zero && product_negative == std::signbit(c)
-                              ? product_negative
-                              : down;
-    return negative ? -0.0f : 0.0f;
+// Native SM120 exponent-grid and random-bit qualification: FCHK selects
+// the division slow path outside these biased-exponent limits.
+step_result execute_fchk(const instruction &inst, warp_state &state,
+                         execution_context &) {
+  if (!has_typed_operands(inst, 3) ||
+      inst.operands[0].kind != operand_kind::kPredicate)
+    return unsupported(inst, "FCHK requires predicate and two FP32 sources");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    float a, b;
+    if (!read_f32_operand(inst.operands[1], state, lane, a) ||
+        !read_f32_operand(inst.operands[2], state, lane, b))
+      return unsupported(inst, "unsupported FCHK source");
+    const int ea = (float_bits(a) >> 23) & 255;
+    const int eb = (float_bits(b) >> 23) & 255;
+    const bool slow = ea < 25 || ea > 254 || eb < 2 || eb > 251 ||
+                      ea - eb < -124 || ea - eb > 126;
+    state.write_predicate(lane, inst.operands[0].index, slow);
   }
-  float result = static_cast<float>(sum);
-  const double rounded = result;
-  const bool above = rounded > sum || (rounded == sum && residual < 0.0);
-  const bool below = rounded < sum || (rounded == sum && residual > 0.0);
-  if ((down && above) || (up && below))
-    result = std::nextafter(result, down ? -INFINITY : INFINITY);
-  else if (!down && !up && ((sum > 0 && above) || (sum < 0 && below)))
-    result = std::nextafter(result, 0.0f);
-  return result;
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+// Use the same rounding primitive as PTX. fesetround is thread-local and
+// the helper restores the caller's mode before returning.
+int fp32_rounding(const instruction &inst) {
+  if (inst.opcode.find(".RM") != std::string::npos)
+    return FE_DOWNWARD;
+  if (inst.opcode.find(".RP") != std::string::npos)
+    return FE_UPWARD;
+  if (inst.opcode.find(".RZ") != std::string::npos)
+    return FE_TOWARDZERO;
+  return FE_TONEAREST;
 }
 
 step_result execute_ffma(const instruction &inst, warp_state &state,
@@ -270,12 +154,11 @@ step_result execute_ffma(const instruction &inst, warp_state &state,
       b = flush_subnormal(b);
       c = flush_subnormal(c);
     }
-    const bool directed = inst.opcode == "FFMA.RM" ||
-                          inst.opcode == "FFMA.RP" || inst.opcode == "FFMA.RZ";
-    float result =
-        directed ? directed_fma(a, b, c, inst.opcode) : std::fma(a, b, c);
+    float result = rounded_f32_fma(a, b, c, fp32_rounding(inst), false);
     if (ftz)
       result = flush_subnormal(result);
+    if (inst.opcode.find(".SAT") != std::string::npos)
+      result = !(result > 0.0f) ? 0.0f : std::min(result, 1.0f);
     result_bits = float_bits(result);
     return true;
   };
@@ -302,7 +185,8 @@ step_result execute_ffma(const instruction &inst, warp_state &state,
 }
 
 bool read_half2_operand(const operand &source, const warp_state &state,
-                        unsigned lane, float &low, float &high) {
+                        unsigned lane, float &low, float &high,
+                        bool ftz = false) {
   uint32_t packed = 0;
   if (source.kind == operand_kind::kRegister)
     packed = state.read_register(lane, source.index);
@@ -312,16 +196,22 @@ bool read_half2_operand(const operand &source, const warp_state &state,
     packed = static_cast<uint32_t>(source.immediate);
   else
     return false;
-  low = half_float(static_cast<uint16_t>(packed));
-  high = half_float(static_cast<uint16_t>(packed >> 16));
-  if (source.absolute) {
-    low = std::fabs(low);
-    high = std::fabs(high);
-  }
-  if (source.negated) {
-    low = -low;
-    high = -high;
-  }
+  if (source.wide || source.bitwise_complement)
+    return false;
+  auto extract = [&](unsigned half) {
+    const auto selected =
+        source.half_selection == operand_half_selection::kLowReplicate ? 0
+        : source.half_selection == operand_half_selection::kHighReplicate
+            ? 1
+            : half;
+    auto bits = half_sign_bits(packed >> (16 * selected), source.absolute,
+                               source.negated);
+    if (ftz)
+      bits = half_flush_subnormal(bits);
+    return half_float(bits);
+  };
+  low = extract(0);
+  high = extract(1);
   return true;
 }
 
@@ -361,6 +251,7 @@ step_result execute_hadd2(const instruction &inst, warp_state &state,
   if (!has_typed_operands(inst, 3) ||
       inst.operands[0].kind != operand_kind::kRegister)
     return unsupported(inst, "unsupported packed FP16 add operand form");
+  const bool ftz = inst.opcode == "HADD2.FTZ";
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
     if ((state.active_mask & (1u << lane)) == 0 ||
         !lane_executes(inst, state, lane))
@@ -369,13 +260,241 @@ step_result execute_hadd2(const instruction &inst, warp_state &state,
     float a_high = 0.0f;
     float b_low = 0.0f;
     float b_high = 0.0f;
-    if (!read_half2_operand(inst.operands[1], state, lane, a_low, a_high) ||
-        !read_half2_operand(inst.operands[2], state, lane, b_low, b_high))
+    if (!read_half2_operand(inst.operands[1], state, lane, a_low, a_high,
+                            ftz) ||
+        !read_half2_operand(inst.operands[2], state, lane, b_low, b_high, ftz))
       return unsupported(inst, "unsupported packed FP16 add source");
-    const uint16_t low = float_half_rn(float_bits(a_low + b_low));
-    const uint16_t high = float_half_rn(float_bits(a_high + b_high));
+    uint16_t low = float_half_rn(float_bits(a_low + b_low));
+    uint16_t high = float_half_rn(float_bits(a_high + b_high));
+    if (ftz) {
+      low = half_flush_subnormal(low);
+      high = half_flush_subnormal(high);
+    }
     state.write_register(lane, inst.operands[0].index,
                          low | (static_cast<uint32_t>(high) << 16));
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_bfloat_fma_register(const instruction &inst,
+                                        warp_state &state) {
+  if (!has_typed_operands(inst, 4))
+    return unsupported(inst, "expected three packed BF16 FMA sources");
+  for (unsigned i = 0; i < 4; ++i) {
+    const auto &op = inst.operands[i];
+    if (op.kind != operand_kind::kRegister || op.wide ||
+        op.bitwise_complement ||
+        (i == 0 && (op.negated || op.absolute ||
+                    op.half_selection != operand_half_selection::kNone)))
+      return unsupported(inst, "unsupported packed BF16 FMA register modifier");
+  }
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    uint32_t result = 0;
+    for (unsigned half = 0; half < 2; ++half) {
+      float values[3];
+      for (unsigned i = 0; i < 3; ++i) {
+        const auto &op = inst.operands[i + 1];
+        const unsigned selected =
+            op.half_selection == operand_half_selection::kLowReplicate ? 0
+            : op.half_selection == operand_half_selection::kHighReplicate
+                ? 1
+                : half;
+        const float value = bfloat_float(half_sign_bits(
+            state.read_register(lane, op.index) >> (16 * selected), op.absolute,
+            op.negated));
+        values[i] = value;
+      }
+      result |= uint32_t(bf16_fma_rn(values[0], values[1], values[2]))
+                << (16 * half);
+    }
+    state.write_register(lane, inst.operands[0].index, result);
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_bfloat_fma_immediate(const instruction &inst,
+                                         warp_state &state,
+                                         execution_context &) {
+  if (inst.operands.size() == 4)
+    return execute_bfloat_fma_register(inst, state);
+  if (!has_typed_operands(inst, 5))
+    return unsupported(inst, "expected packed FMA immediate form");
+  for (unsigned i : {0u, 1u, 4u}) {
+    const auto &op = inst.operands[i];
+    if (op.kind != operand_kind::kRegister || op.negated || op.absolute ||
+        op.bitwise_complement || op.wide ||
+        op.half_selection != operand_half_selection::kNone)
+      return unsupported(inst, "packed FMA requires plain registers");
+  }
+  for (unsigned i : {2u, 3u})
+    if (inst.operands[i].kind != operand_kind::kImmediate &&
+        inst.operands[i].kind != operand_kind::kFloatImmediate)
+      return unsupported(inst, "only literal BF16 multipliers supported");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    float high, low;
+    if (!read_f32_operand(inst.operands[2], state, lane, high) ||
+        !read_f32_operand(inst.operands[3], state, lane, low))
+      return unsupported(inst, "invalid packed FMA literals");
+    const uint32_t a = state.read_register(lane, inst.operands[1].index);
+    const uint32_t c = state.read_register(lane, inst.operands[4].index);
+    const uint32_t lo =
+        bf16_fma_rn(bfloat_float(a & 0xffff), low, bfloat_float(c & 0xffff));
+    const uint32_t hi =
+        bf16_fma_rn(bfloat_float(a >> 16), high, bfloat_float(c >> 16));
+    state.write_register(lane, inst.operands[0].index, lo | (hi << 16));
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_bfloat_minmax2(const instruction &inst, warp_state &state,
+                                   execution_context &) {
+  const unsigned sources = inst.opcode == "VHMNMX.BF16_V2" ? 3 : 2;
+  const bool immediate = sources == 2 && inst.operands.size() == 5;
+  if (!has_typed_operands(inst, sources + 2 + unsigned(immediate)) ||
+      inst.operands[0].kind != operand_kind::kRegister ||
+      inst.operands[0].half_selection != operand_half_selection::kNone)
+    return unsupported(inst, "unsupported packed BF16 min/max form");
+  for (unsigned i = 1; i <= (immediate ? 1 : sources); ++i) {
+    const auto &op = inst.operands[i];
+    if (op.kind != operand_kind::kRegister || op.wide || op.bitwise_complement)
+      return unsupported(inst, "packed BF16 min/max requires register sources");
+  }
+  if (immediate)
+    for (unsigned i : {2u, 3u})
+      if (inst.operands[i].kind != operand_kind::kImmediate &&
+          inst.operands[i].kind != operand_kind::kFloatImmediate)
+        return unsupported(inst, "expected split BF16 min/max literals");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    bool minimum;
+    if (!read_predicate_operand(
+            inst.operands[sources + 1 + unsigned(immediate)], state, lane,
+            minimum))
+      return unsupported(inst, "invalid min/max predicate");
+    uint32_t result = 0;
+    for (unsigned half = 0; half < 2; ++half) {
+      float values[3];
+      for (unsigned i = 0; i < sources; ++i) {
+        if (immediate && i == 1) {
+          float literal;
+          if (!read_f32_operand(inst.operands[half == 0 ? 3 : 2], state, lane,
+                                literal))
+            return unsupported(inst, "invalid BF16 min/max literal");
+          values[i] = bfloat_float(float_bfloat_rn(literal));
+          continue;
+        }
+        const auto &op = inst.operands[i + 1];
+        unsigned selected =
+            op.half_selection == operand_half_selection::kLowReplicate ? 0
+            : op.half_selection == operand_half_selection::kHighReplicate
+                ? 1
+                : half;
+        const float value = bfloat_float(half_sign_bits(
+            state.read_register(lane, op.index) >> (16 * selected), op.absolute,
+            op.negated));
+        if (sources == 3 && std::isnan(value)) {
+          std::ostringstream detail;
+          detail << "unqualified three-input BF16 NaN at lane " << lane
+                 << " source " << i << " half " << half << ": bits=0x"
+                 << std::hex << (float_bits(value) >> 16);
+          return unsupported(inst, detail.str());
+        }
+        values[i] = value;
+      }
+      uint16_t value = float_bfloat_rn(values[0]);
+      for (unsigned i = 1; i < sources; ++i)
+        value = bf16_minmax(value, float_bfloat_rn(values[i]), minimum);
+      result |= uint32_t(value) << (half * 16);
+    }
+    state.write_register(lane, inst.operands[0].index, result);
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_bfloat_mul2(const instruction &inst, warp_state &state,
+                                execution_context &) {
+  if (!has_typed_operands(inst, 3) ||
+      inst.operands[0].kind != operand_kind::kRegister ||
+      inst.operands[0].half_selection != operand_half_selection::kNone)
+    return unsupported(inst, "expected BF16 pair destination and two sources");
+  for (unsigned i : {1u, 2u}) {
+    const auto &op = inst.operands[i];
+    if (op.kind != operand_kind::kRegister || op.wide || op.bitwise_complement)
+      return unsupported(inst,
+                         "packed BF16 multiply requires register sources");
+  }
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    uint32_t result = 0;
+    for (unsigned half = 0; half < 2; ++half) {
+      float values[2];
+      for (unsigned i = 0; i < 2; ++i) {
+        const auto &op = inst.operands[i + 1];
+        unsigned selected =
+            op.half_selection == operand_half_selection::kLowReplicate ? 0
+            : op.half_selection == operand_half_selection::kHighReplicate
+                ? 1
+                : half;
+        const float value = bfloat_float(half_sign_bits(
+            state.read_register(lane, op.index) >> (16 * selected), op.absolute,
+            op.negated));
+        values[i] = value;
+      }
+      result |= uint32_t(bf16_mul_rn(values[0], values[1])) << (half * 16);
+    }
+    state.write_register(lane, inst.operands[0].index, result);
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_bfloat_add2(const instruction &inst, warp_state &state,
+                                execution_context &) {
+  if (!has_typed_operands(inst, 3) ||
+      inst.operands[0].kind != operand_kind::kRegister ||
+      inst.operands[0].half_selection != operand_half_selection::kNone)
+    return unsupported(inst, "expected BF16 pair destination and two sources");
+  for (unsigned i : {1u, 2u}) {
+    const auto &op = inst.operands[i];
+    if (op.kind != operand_kind::kRegister || op.wide || op.bitwise_complement)
+      return unsupported(inst, "invalid BF16 add source");
+  }
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    uint32_t result = 0;
+    for (unsigned half = 0; half < 2; ++half) {
+      float values[2];
+      for (unsigned i = 0; i < 2; ++i) {
+        const auto &op = inst.operands[i + 1];
+        unsigned selected =
+            op.half_selection == operand_half_selection::kLowReplicate ? 0
+            : op.half_selection == operand_half_selection::kHighReplicate
+                ? 1
+                : half;
+        const float value = bfloat_float(half_sign_bits(
+            state.read_register(lane, op.index) >> (16 * selected), op.absolute,
+            op.negated));
+        values[i] = value;
+      }
+      result |= uint32_t(bf16_add_rn(values[0], values[1])) << (16 * half);
+    }
+    state.write_register(lane, inst.operands[0].index, result);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -432,17 +551,14 @@ step_result execute_binary_float(const instruction &inst, warp_state &state,
     float result = 0.0f;
     const bool multiply =
         inst.opcode.rfind("FMUL", 0) == 0 || inst.opcode.rfind("UFMUL", 0) == 0;
-    if (multiply && inst.opcode.find(".RZ") != std::string::npos) {
-      const double exact = static_cast<double>(a) * static_cast<double>(b);
-      result = static_cast<float>(exact);
-      if (std::isfinite(exact) &&
-          std::fabs(static_cast<double>(result)) > std::fabs(exact))
-        result = std::nextafter(result, 0.0f);
-    } else {
-      result = multiply ? a * b : a + b;
-    }
+    // A same-sign zero preserves FMUL's signed zero through the FMA helper.
+    result = multiply ? rounded_f32_fma(a, b, std::copysign(0.0f, a * b),
+                                        fp32_rounding(inst), false)
+                      : rounded_f32_fma(a, 1.0f, b, fp32_rounding(inst), false);
     if (ftz)
       result = flush_subnormal(result);
+    if (inst.opcode.find(".SAT") != std::string::npos)
+      result = !(result > 0.0f) ? 0.0f : std::min(result, 1.0f);
     result_bits = float_bits(result);
     return true;
   };
@@ -470,7 +586,8 @@ step_result execute_binary_float(const instruction &inst, warp_state &state,
 
 step_result execute_fmnmx(const instruction &inst, warp_state &state,
                           execution_context &) {
-  if (!has_typed_operands(inst, 4) ||
+  const bool ternary = inst.opcode.rfind("FMNMX3", 0) == 0;
+  if (!has_typed_operands(inst, ternary ? 5 : 4) ||
       inst.operands[0].kind != operand_kind::kRegister)
     return unsupported(inst, "unsupported FMNMX operand form");
   for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
@@ -479,16 +596,25 @@ step_result execute_fmnmx(const instruction &inst, warp_state &state,
       continue;
     float a = 0.0f;
     float b = 0.0f;
+    float c = 0.0f;
     bool choose_minimum = false;
     if (!read_f32_operand(inst.operands[1], state, lane, a) ||
         !read_f32_operand(inst.operands[2], state, lane, b) ||
-        !read_predicate_operand(inst.operands[3], state, lane, choose_minimum))
+        (ternary && !read_f32_operand(inst.operands[3], state, lane, c)) ||
+        !read_predicate_operand(inst.operands[ternary ? 4 : 3], state, lane,
+                                choose_minimum))
       return unsupported(inst, "unsupported FMNMX source");
     if (inst.opcode.find(".FTZ") != std::string::npos) {
       a = flush_subnormal(a);
       b = flush_subnormal(b);
+      c = flush_subnormal(c);
     }
-    const float result = choose_minimum ? std::fmin(a, b) : std::fmax(a, b);
+    float result = choose_minimum ? std::fmin(a, b) : std::fmax(a, b);
+    if (ternary)
+      result = choose_minimum ? std::fmin(result, c) : std::fmax(result, c);
+    if (inst.opcode == "FMNMX3.NAN" &&
+        (std::isnan(a) || std::isnan(b) || std::isnan(c)))
+      result = bits_float(0x7fffffff);
     state.write_register(lane, inst.operands[0].index, float_bits(result));
   }
   advance(inst, state);
@@ -539,64 +665,107 @@ step_result execute_fsel(const instruction &inst, warp_state &state,
   return {step_status::kAdvanced, {}};
 }
 
+// Comparison and Boolean combination are shared by FSET and FSETP.
+bool fp_compare(const instruction &inst, float a, float b) {
+  if (inst.opcode.find(".FTZ") != std::string::npos) {
+    a = flush_subnormal(a);
+    b = flush_subnormal(b);
+  }
+  const bool nan = std::isnan(a) || std::isnan(b);
+  const auto has = [&](const char *cmp) {
+    return inst.opcode.find(std::string(".") + cmp + ".") != std::string::npos;
+  };
+  if (has("NAN"))
+    return nan;
+  if (has("NUM"))
+    return !nan;
+  if (has("LTU"))
+    return nan || a < b;
+  if (has("LEU"))
+    return nan || a <= b;
+  if (has("GTU"))
+    return nan || a > b;
+  if (has("GEU"))
+    return nan || a >= b;
+  if (has("EQU"))
+    return nan || a == b;
+  if (has("NEU"))
+    return nan || a != b;
+  if (has("LT"))
+    return !nan && a < b;
+  if (has("LE"))
+    return !nan && a <= b;
+  if (has("GT"))
+    return !nan && a > b;
+  if (has("GE"))
+    return !nan && a >= b;
+  if (has("EQ"))
+    return !nan && a == b;
+  return !nan && a != b; // NE, qualified by registration
+}
+bool fp_combine(const instruction &inst, bool cmp, bool input) {
+  if (inst.opcode.find(".XOR") != std::string::npos)
+    return cmp != input;
+  if (inst.opcode.find(".OR") != std::string::npos)
+    return cmp || input;
+  return cmp && input;
+}
+step_result execute_fset_mask(const instruction &inst, warp_state &state,
+                              execution_context &) {
+  if (!has_typed_operands(inst, 4) ||
+      inst.operands[0].kind != operand_kind::kRegister)
+    return unsupported(inst,
+                       "expected mask destination and comparison sources");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    float a, b;
+    bool input;
+    if (!read_f32_operand(inst.operands[1], state, lane, a) ||
+        !read_f32_operand(inst.operands[2], state, lane, b) ||
+        !read_predicate_operand(inst.operands[3], state, lane, input))
+      return unsupported(inst, "unsupported mask comparison source");
+    state.write_register(
+        lane, inst.operands[0].index,
+        fp_combine(inst, fp_compare(inst, a, b), input) ? 0xffffffffu : 0u);
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
 step_result execute_fsetp(const instruction &inst, warp_state &state,
                           execution_context &) {
   const bool uniform = inst.opcode.rfind("UFSETP.", 0) == 0;
-  if (!has_typed_operands(inst, 5) ||
-      inst.operands[0].kind != (uniform ? operand_kind::kUniformPredicate
-                                        : operand_kind::kPredicate) ||
-      inst.operands[1].kind != (uniform ? operand_kind::kUniformPredicate
-                                        : operand_kind::kPredicate) ||
-      inst.operands[1].index != kTruePredicate ||
-      inst.opcode.find(".AND") == std::string::npos ||
-      (uniform && inst.has_guard &&
-       inst.guard.kind != operand_kind::kUniformPredicate))
+  const auto kind =
+      uniform ? operand_kind::kUniformPredicate : operand_kind::kPredicate;
+  if (!has_typed_operands(inst, 5) || inst.operands[0].kind != kind ||
+      inst.operands[1].kind != kind ||
+      (uniform && (inst.operands[2].kind == operand_kind::kRegister ||
+                   inst.operands[3].kind == operand_kind::kRegister ||
+                   inst.operands[4].kind != operand_kind::kUniformPredicate ||
+                   (inst.has_guard &&
+                    inst.guard.kind != operand_kind::kUniformPredicate))))
     return unsupported(inst, "unsupported FSETP operand form");
-
-  const auto compare = [&](unsigned lane, bool &result) {
-    float a = 0.0f;
-    float b = 0.0f;
-    bool input = false;
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    float a, b;
+    bool input;
     if (!read_f32_operand(inst.operands[2], state, lane, a) ||
         !read_f32_operand(inst.operands[3], state, lane, b) ||
         !read_predicate_operand(inst.operands[4], state, lane, input))
-      return false;
-    if (inst.opcode.find(".FTZ") != std::string::npos) {
-      a = flush_subnormal(a);
-      b = flush_subnormal(b);
+      return unsupported(inst, "unsupported FSETP source");
+    const bool cmp = fp_compare(inst, a, b);
+    const bool first = fp_combine(inst, cmp, input),
+               second = fp_combine(inst, !cmp, input);
+    if (uniform) {
+      state.write_uniform_predicate(inst.operands[0].index, first);
+      state.write_uniform_predicate(inst.operands[1].index, second);
+      break;
     }
-    bool compared = false;
-    if (inst.opcode.find(".GEU.") != std::string::npos)
-      compared = std::isnan(a) || std::isnan(b) || a >= b;
-    else if (inst.opcode.find(".NEU.") != std::string::npos)
-      compared = std::isnan(a) || std::isnan(b) || a != b;
-    else if (inst.opcode.find(".NE.") != std::string::npos)
-      compared = !std::isnan(a) && !std::isnan(b) && a != b;
-    else if (inst.opcode.find(".GT.") != std::string::npos)
-      compared = !std::isnan(a) && !std::isnan(b) && a > b;
-    else
-      return false;
-    result = compared && input;
-    return true;
-  };
-
-  if (uniform) {
-    if (any_lane_executes(inst, state)) {
-      bool result = false;
-      if (!compare(0, result))
-        return unsupported(inst, "unsupported UFSETP source or comparison");
-      state.write_uniform_predicate(inst.operands[0].index, result);
-    }
-  } else {
-    for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
-      if ((state.active_mask & (1u << lane)) == 0 ||
-          !lane_executes(inst, state, lane))
-        continue;
-      bool result = false;
-      if (!compare(lane, result))
-        return unsupported(inst, "unsupported FSETP source or comparison");
-      state.write_predicate(lane, inst.operands[0].index, result);
-    }
+    state.write_predicate(lane, inst.operands[0].index, first);
+    state.write_predicate(lane, inst.operands[1].index, second);
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -616,6 +785,66 @@ step_result execute_mufu_ex2(const instruction &inst, warp_state &state,
       return unsupported(inst, "unsupported MUFU.EX2 source");
     state.write_register(lane, inst.operands[0].index,
                          float_bits(std::exp2(source)));
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_mufu_tanh(const instruction &inst, warp_state &state,
+                              execution_context &) {
+  if (!has_typed_operands(inst, 2) ||
+      inst.operands[0].kind != operand_kind::kRegister)
+    return unsupported(inst, "unsupported MUFU.TANH operand form");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if (!(state.active_mask & (1u << lane)) ||
+        !lane_executes(inst, state, lane))
+      continue;
+    float source = 0;
+    if (!read_f32_operand(inst.operands[1], state, lane, source))
+      return unsupported(inst, "unsupported MUFU.TANH source");
+    // Mathematical functional approximation, not a bit-exact SFU polynomial.
+    state.write_register(lane, inst.operands[0].index,
+                         float_bits(std::tanh(source)));
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_mufu_rsq(const instruction &inst, warp_state &state,
+                             execution_context &) {
+  if (!has_typed_operands(inst, 2) ||
+      inst.operands[0].kind != operand_kind::kRegister)
+    return unsupported(inst, "unsupported MUFU.RSQ operand form");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if ((state.active_mask & (1u << lane)) == 0 ||
+        !lane_executes(inst, state, lane))
+      continue;
+    float source = 0.0f;
+    if (!read_f32_operand(inst.operands[1], state, lane, source))
+      return unsupported(inst, "unsupported MUFU.RSQ source");
+    // Functional approximation, not a bit-exact SFU polynomial model.
+    state.write_register(lane, inst.operands[0].index,
+                         float_bits(1.0f / std::sqrt(flush_subnormal(source))));
+  }
+  advance(inst, state);
+  return {step_status::kAdvanced, {}};
+}
+
+step_result execute_mufu_sqrt(const instruction &inst, warp_state &state,
+                              execution_context &) {
+  if (!has_typed_operands(inst, 2) ||
+      inst.operands[0].kind != operand_kind::kRegister)
+    return unsupported(inst, "unsupported MUFU.SQRT operand form");
+  for (unsigned lane = 0; lane < kWarpLanes; ++lane) {
+    if ((state.active_mask & (1u << lane)) == 0 ||
+        !lane_executes(inst, state, lane))
+      continue;
+    float source = 0.0f;
+    if (!read_f32_operand(inst.operands[1], state, lane, source))
+      return unsupported(inst, "unsupported MUFU.SQRT source");
+    // Functional approximation, not a bit-exact SFU polynomial model.
+    state.write_register(lane, inst.operands[0].index,
+                         float_bits(std::sqrt(flush_subnormal(source))));
   }
   advance(inst, state);
   return {step_status::kAdvanced, {}};
@@ -643,63 +872,61 @@ step_result execute_mufu_lg2(const instruction &inst, warp_state &state,
 } // namespace
 
 void register_float_semantics(frontend &target) {
-  target.register_semantics("I2F.RP", execute_i2f);
-  target.register_semantics("I2F.U8", execute_i2f);
-  target.register_semantics("I2F.U16", execute_i2f);
-  target.register_semantics("I2F.U16.RZ", execute_i2f);
-  target.register_semantics("I2F.U32.RP", execute_i2f);
-  target.register_semantics("I2F.U64.RP", execute_i2f);
-  target.register_semantics("UI2F.U16", execute_i2f);
-  target.register_semantics("UI2F.U16.RZ", execute_i2f);
-  target.register_semantics("UI2F.RP", execute_i2f);
-  target.register_semantics("UI2F.U8", execute_i2f);
-  target.register_semantics("UI2F.U32.RP", execute_i2f);
-  target.register_semantics("UI2F.U64.RP", execute_i2f);
-  target.register_semantics("I2FP.F32.S32", execute_i2fp_f32);
-  target.register_semantics("I2FP.F32.S32.RZ", execute_i2fp_f32);
-  target.register_semantics("I2FP.F32.U32", execute_i2fp_f32);
-  target.register_semantics("I2FP.F32.U32.RZ", execute_i2fp_f32);
+  register_float_conversion_semantics(target);
+  for (const std::string base : {"FSETP", "UFSETP", "FSET.BF"})
+    for (const std::string cmp :
+         {"LT", "LE", "GT", "GE", "EQ", "NE", "LTU", "LEU", "GTU", "GEU", "EQU",
+          "NEU", "NUM", "NAN"})
+      for (const std::string ftz : {"", ".FTZ"})
+        for (const std::string combine : {"AND", "OR", "XOR"})
+          target.register_semantics(base + "." + cmp + ftz + "." + combine,
+                                    base == "FSET.BF" ? execute_fset_mask
+                                                      : execute_fsetp);
+
+  for (const std::string base :
+       {"FADD", "FMUL", "FFMA", "UFADD", "UFMUL", "UFFMA"})
+    for (const std::string ftz : {"", ".FTZ"})
+      for (const std::string round : {"", ".RM", ".RP", ".RZ"})
+        for (const std::string sat : {"", ".SAT"})
+          target.register_semantics(base + ftz + round + sat,
+                                    base.find("FFMA") != std::string::npos
+                                        ? execute_ffma
+                                        : execute_binary_float);
+
   target.register_semantics("MUFU.RCP", execute_mufu_rcp);
-  target.register_semantics("F2I.FTZ.U32.TRUNC.NTZ", execute_f2i);
-  target.register_semantics("F2I.U32.TRUNC.NTZ", execute_f2i);
-  target.register_semantics("UF2I.FTZ.U32.TRUNC.NTZ", execute_f2i);
-  target.register_semantics("F2FP.F16.F32.PACK_AB", execute_f2fp_pack_ab);
-  target.register_semantics("FFMA", execute_ffma);
-  target.register_semantics("FFMA.RM", execute_ffma);
-  target.register_semantics("FFMA.RP", execute_ffma);
-  target.register_semantics("FFMA.RZ", execute_ffma);
-  target.register_semantics("FFMA.FTZ", execute_ffma);
-  target.register_semantics("UFFMA.FTZ", execute_ffma);
+
+  register_mixed_precision_semantics(target);
+
+  target.register_semantics("FCHK", execute_fchk);
+  target.register_semantics("FFMA2", execute_fp32x2);
+  target.register_semantics("FFMA2.FTZ", execute_fp32x2);
+  target.register_semantics("FADD2", execute_fp32x2);
+  target.register_semantics("FADD2.FTZ", execute_fp32x2);
+  target.register_semantics("FMUL2", execute_fp32x2);
+  target.register_semantics("FMUL2.FTZ", execute_fp32x2);
   target.register_semantics("HFMA2", execute_hfma2);
   target.register_semantics("HFMA2.MMA", execute_hfma2);
   target.register_semantics("HADD2", execute_hadd2);
+  target.register_semantics("HADD2.FTZ", execute_hadd2);
+  target.register_semantics("HADD2.BF16_V2", execute_bfloat_add2);
+  target.register_semantics("HMUL2.BF16_V2", execute_bfloat_mul2);
+  target.register_semantics("HMNMX2.BF16_V2", execute_bfloat_minmax2);
+  target.register_semantics("VHMNMX.BF16_V2", execute_bfloat_minmax2);
+  target.register_semantics("HFMA2.BF16_V2", execute_bfloat_fma_immediate);
   target.register_semantics("HADD2.F32", execute_hadd2_f32_conversion);
-  target.register_semantics("FMUL", execute_binary_float);
-  target.register_semantics("FMUL.FTZ", execute_binary_float);
-  target.register_semantics("FMUL.RZ", execute_binary_float);
-  target.register_semantics("UFMUL", execute_binary_float);
-  target.register_semantics("UFMUL.FTZ", execute_binary_float);
-  target.register_semantics("UFADD", execute_binary_float);
-  target.register_semantics("UFADD.FTZ", execute_binary_float);
-  target.register_semantics("FADD", execute_binary_float);
-  target.register_semantics("FADD.FTZ", execute_binary_float);
   target.register_semantics("FMNMX", execute_fmnmx);
   target.register_semantics("FMNMX.FTZ", execute_fmnmx);
+  target.register_semantics("FMNMX3.FTZ", execute_fmnmx);
+  target.register_semantics("FMNMX3", execute_fmnmx);
+  target.register_semantics("FMNMX3.NAN", execute_fmnmx);
+
   target.register_semantics("FSEL", execute_fsel);
   target.register_semantics("UFSEL", execute_fsel);
-  target.register_semantics("FSETP.GEU.AND", execute_fsetp);
-  target.register_semantics("FSETP.NEU.AND", execute_fsetp);
-  target.register_semantics("FSETP.NEU.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.NE.AND", execute_fsetp);
-  target.register_semantics("FSETP.NE.FTZ.AND", execute_fsetp);
-  target.register_semantics("FSETP.GT.AND", execute_fsetp);
-  target.register_semantics("UFSETP.GEU.AND", execute_fsetp);
-  target.register_semantics("UFSETP.NEU.AND", execute_fsetp);
-  target.register_semantics("UFSETP.NEU.FTZ.AND", execute_fsetp);
-  target.register_semantics("UFSETP.NE.FTZ.AND", execute_fsetp);
-  target.register_semantics("UFSETP.GT.AND", execute_fsetp);
   target.register_semantics("MUFU.EX2", execute_mufu_ex2);
   target.register_semantics("MUFU.LG2", execute_mufu_lg2);
+  target.register_semantics("MUFU.RSQ", execute_mufu_rsq);
+  target.register_semantics("MUFU.SQRT", execute_mufu_sqrt);
+  target.register_semantics("MUFU.TANH", execute_mufu_tanh);
 }
 
 } // namespace functional_detail

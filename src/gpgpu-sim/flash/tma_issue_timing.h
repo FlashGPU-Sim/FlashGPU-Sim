@@ -31,4 +31,25 @@ private:
   unsigned long long m_ready_cycle = 0;
 };
 
+// Optional PTX expansion: back-to-back transfers may issue before a following
+// non-TMA instruction. Native SASS does not use this synthetic helper delay.
+class tma_instruction_issue_hold_t {
+public:
+  void reset() {
+    next_tma_.reset();
+    next_other_.reset();
+  }
+  void note_issue(unsigned long long cycle, unsigned latency,
+                  unsigned interval) {
+    reset();
+    next_tma_.begin(cycle, interval);
+    next_other_.begin(cycle, latency);
+  }
+  bool stalls(unsigned long long cycle, bool next_is_tma) const {
+    return !(next_is_tma ? next_tma_ : next_other_).ready(cycle);
+  }
+
+private:
+  tma_issue_timing_t next_tma_, next_other_;
+};
 } // namespace flash_gpgpu_sim

@@ -16,6 +16,7 @@ void parse_instruction_operands(instruction &inst);
 // Normalize native operand spellings for both semantics and timing consumers.
 // The original instruction text and guard remain unchanged.
 bool normalize_ldg_operands(instruction &inst);
+bool normalize_stg_operands(instruction &inst);
 bool normalize_r2p_operands(instruction &inst, unsigned &byte_selector);
 
 } // namespace sass

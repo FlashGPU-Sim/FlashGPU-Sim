@@ -77,6 +77,7 @@ class ptx_recognizer;
 %token  REQNTID_DIRECTIVE
 %token  EXPLICITCLUSTER_DIRECTIVE
 %token  REQNCTAPERCLUSTER_DIRECTIVE
+%token  MAXCLUSTERRANK_DIRECTIVE
 %token  SECTION_DIRECTIVE
 %token  DEBUG_DIRECTIVE
 %token  SHARED_DIRECTIVE
@@ -105,6 +106,8 @@ class ptx_recognizer;
 %token  U64_TYPE
 %token  F16_TYPE
 %token  F16X2_TYPE
+%token E4M3X2_TYPE UE8M0X2_TYPE E2M1X2_TYPE
+%token BF16X2_TYPE
 %token  BF16_TYPE
 %token  TF32_TYPE
 %token  E4M3_TYPE
@@ -183,6 +186,7 @@ class ptx_recognizer;
 %token GEOM_MODIFIER_2D
 %token GEOM_MODIFIER_3D
 %token SAT_OPTION
+%token RELU_OPTION
 %token SATFINITE_OPTION
 %token FTZ_OPTION
 %token NEG_OPTION
@@ -246,6 +250,7 @@ class ptx_recognizer;
 %token	PRMT_RC16_MODE;
 %token	PRMT_ECL_MODE;
 %token	PRMT_ECR_MODE;
+%token	SHIFTAMT_OPTION;
 %token	WRAP_OPTION;
 %token	CLAMP_OPTION;
 %token	LEFT_OPTION;
@@ -257,6 +262,7 @@ class ptx_recognizer;
 %token	DIM_4D_OPTION;
 %token	DIM_5D_OPTION;
 %token	REPLACE_OPTION;
+%token GATHER4_OPTION;
 %token	TILE_OPTION;
 %token	GLOBAL_ADDRESS_OPTION;
 %token	RANK_OPTION;
@@ -271,10 +277,12 @@ class ptx_recognizer;
 %token	FILL_MODE_OPTION;
 %token	CP_FENCEPROXY_OPTION;
 %token	RELEASE_OPTION;
+%token	ACQ_REL_OPTION;
 %token	ACQUIRE_OPTION;
 %token	GPU_OPTION;
 %token	L2_CACHE_HINT_OPTION;
 %token	L2_OPTION;
+%token L1_NO_ALLOCATE_OPTION;
 %token	ALIGNED_OPTION;
 %token	B1024_TYPE;
 %token	GENERIC_OPTION;
@@ -285,8 +293,15 @@ class ptx_recognizer;
 %token	BULK_GROUP_OPTION;
 %token	CLUSTER_OPTION;
 %token	MULTICAST_CLUSTER_OPTION;
+%token CLC_MULTICAST_ALL_OPTION;
+%token CLC_IS_CANCELED_OPTION;
+%token CLC_GET_X_OPTION;
+%token CLC_GET_Y_OPTION;
+%token CLC_GET_Z_OPTION;
+%token CLC_GET_XYZ_OPTION;
 %token	INVAL_OPTION;
 %token	MBARRIER_INIT_OPTION;
+%token	M16N8_OPTION;
 %token	M8N8_OPTION;
 %token	TRANS_OPTION;
 %token	X1_OPTION;
@@ -294,6 +309,32 @@ class ptx_recognizer;
 %token	X4_OPTION;
 %token	X16_OPTION;
 %token	X32_OPTION;
+%token	X8_OPTION;
+%token	X64_OPTION;
+%token	X128_OPTION;
+%token	TCGEN05_WS_OPTION;
+%token	TCGEN05_COLLECTOR_B0_DISCARD_OPTION;
+%token	TCGEN05_COLLECTOR_B0_FILL_OPTION;
+%token	TCGEN05_COLLECTOR_B0_USE_OPTION;
+%token	TCGEN05_COLLECTOR_B0_LASTUSE_OPTION;
+%token	TCGEN05_COLLECTOR_B1_DISCARD_OPTION;
+%token	TCGEN05_COLLECTOR_B1_FILL_OPTION;
+%token	TCGEN05_COLLECTOR_B1_USE_OPTION;
+%token	TCGEN05_COLLECTOR_B1_LASTUSE_OPTION;
+%token	TCGEN05_COLLECTOR_B2_DISCARD_OPTION;
+%token	TCGEN05_COLLECTOR_B2_FILL_OPTION;
+%token	TCGEN05_COLLECTOR_B2_USE_OPTION;
+%token	TCGEN05_COLLECTOR_B2_LASTUSE_OPTION;
+%token	TCGEN05_COLLECTOR_B3_DISCARD_OPTION;
+%token	TCGEN05_COLLECTOR_B3_FILL_OPTION;
+%token	TCGEN05_COLLECTOR_B3_USE_OPTION;
+%token	TCGEN05_COLLECTOR_B3_LASTUSE_OPTION;
+%token	TCGEN05_BLOCK_SCALE_OPTION;
+%token	TCGEN05_BLOCK32_OPTION;
+%token	TCGEN05_SCALE_VEC_1X_OPTION;
+%token	TCGEN05_SCALE_VEC_2X_OPTION;
+%token	TCGEN05_SCALE_VEC_4X_OPTION;
+%token	TCGEN05_BLOCK16_OPTION;
 %token	TCGEN05_CTA_GROUP_1_OPTION;
 %token	TCGEN05_CTA_GROUP_2_OPTION;
 %token	TCGEN05_KIND_F16_OPTION;
@@ -365,6 +406,10 @@ block_spec: MAXNTID_DIRECTIVE INT_OPERAND {
 	| REQNTID_DIRECTIVE INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
 	| REQNTID_DIRECTIVE INT_OPERAND COMMA INT_OPERAND COMMA INT_OPERAND { recognizer->func_header_info_int(".reqntid", $2); printf("GPGPU-Sim PTX: Warning: .reqntid ignored. \n"); }
 	| EXPLICITCLUSTER_DIRECTIVE { recognizer->func_header_info(".explicitcluster"); recognizer->set_explicit_cluster(); }
+	| MAXCLUSTERRANK_DIRECTIVE INT_OPERAND {
+	    recognizer->func_header_info_int(".maxclusterrank", $2);
+	    recognizer->set_max_cluster_rank($2);
+	  }
 	| REQNCTAPERCLUSTER_DIRECTIVE INT_OPERAND {
 	    recognizer->func_header_info_int(".reqnctapercluster", $2);
 	    recognizer->set_req_cluster_dim($2, 1, 1);
@@ -530,6 +575,7 @@ addressable_spec: CONST_DIRECTIVE {  recognizer->add_space_spec(const_space,$1);
 
 type_spec: scalar_type 
 	|  vector_spec scalar_type 
+	|  scalar_type vector_spec
 	;
 
 vector_spec:  V2_TYPE {  recognizer->add_option(V2_TYPE); recognizer->func_header_info(".v2");}
@@ -548,6 +594,10 @@ scalar_type: S8_TYPE { recognizer->add_scalar_type_spec( S8_TYPE ); }
 	| U64_TYPE   { recognizer->add_scalar_type_spec( U64_TYPE ); }
 	| F16_TYPE   { recognizer->add_scalar_type_spec( F16_TYPE ); }
 	| F16X2_TYPE { recognizer->add_scalar_type_spec( F16X2_TYPE ); }
+	| BF16X2_TYPE { recognizer->add_scalar_type_spec( BF16X2_TYPE ); }
+	| E4M3X2_TYPE { recognizer->add_scalar_type_spec(E4M3X2_TYPE); }
+	| UE8M0X2_TYPE { recognizer->add_scalar_type_spec(UE8M0X2_TYPE); }
+	| E2M1X2_TYPE { recognizer->add_scalar_type_spec(E2M1X2_TYPE); }
 	| BF16_TYPE  { recognizer->add_scalar_type_spec( BF16_TYPE ); }
 	| TF32_TYPE  { recognizer->add_scalar_type_spec( TF32_TYPE ); }
 	| E4M3_TYPE  { recognizer->add_scalar_type_spec( E4M3_TYPE ); }
@@ -672,6 +722,7 @@ option: type_spec
 	| GEOM_MODIFIER_2D { recognizer->add_option(GEOM_MODIFIER_2D); }
 	| GEOM_MODIFIER_3D { recognizer->add_option(GEOM_MODIFIER_3D); }
 	| SAT_OPTION { recognizer->add_option(SAT_OPTION); }
+	| RELU_OPTION { recognizer->add_option(RELU_OPTION); }
 	| SATFINITE_OPTION { recognizer->add_option(SATFINITE_OPTION); recognizer->add_wgmma_option(SATFINITE_OPTION); }
 	| WGMMA_SHAPE { recognizer->add_wgmma_option($1); }
 	| FTZ_OPTION { recognizer->add_option(FTZ_OPTION); }
@@ -702,11 +753,13 @@ option: type_spec
 	| DOWN_OPTION { recognizer->add_option(DOWN_OPTION); }
 	| BFLY_OPTION { recognizer->add_option(BFLY_OPTION); }
 	| IDX_OPTION { recognizer->add_option(IDX_OPTION); }
+	| SHIFTAMT_OPTION { recognizer->add_option(SHIFTAMT_OPTION); }
 	| WRAP_OPTION { recognizer->add_option(WRAP_OPTION); }
 	| CLAMP_OPTION { recognizer->add_option(CLAMP_OPTION); }
 	| LEFT_OPTION { recognizer->add_option(LEFT_OPTION); }
 	| RIGHT_OPTION { recognizer->add_option(RIGHT_OPTION); }
 	| REPLACE_OPTION { recognizer->add_option(REPLACE_OPTION); }
+	| GATHER4_OPTION { recognizer->add_option(GATHER4_OPTION); }
 	| TILE_OPTION { recognizer->add_option(TILE_OPTION); }
 	| GLOBAL_ADDRESS_OPTION { recognizer->add_option(GLOBAL_ADDRESS_OPTION); }
 	| RANK_OPTION { recognizer->add_option(RANK_OPTION); }
@@ -722,22 +775,32 @@ option: type_spec
 	| CP_FENCEPROXY_OPTION { recognizer->add_option(CP_FENCEPROXY_OPTION); }
 	| RELEASE_OPTION { recognizer->add_option(RELEASE_OPTION); }
 	| RELAXED_OPTION { recognizer->add_option(RELAXED_OPTION); }
+	| ACQ_REL_OPTION { recognizer->add_option(ACQ_REL_OPTION); }
 	| ACQUIRE_OPTION { recognizer->add_option(ACQUIRE_OPTION); }
 	| GPU_OPTION { recognizer->add_option(GPU_OPTION); }
 	| L2_CACHE_HINT_OPTION { recognizer->add_option(L2_CACHE_HINT_OPTION); }
 	| L2_OPTION { recognizer->add_option(L2_OPTION); }
+	| L1_NO_ALLOCATE_OPTION { recognizer->add_option(L1_NO_ALLOCATE_OPTION); }
 	| ALIGNED_OPTION { recognizer->add_option(ALIGNED_OPTION); }
 	| B1024_TYPE { recognizer->add_option(B1024_TYPE); }
 	| GENERIC_OPTION { recognizer->add_option(GENERIC_OPTION); }
 	| PROXY_OPTION { recognizer->add_option(PROXY_OPTION); }
 	| ASYNC_OPTION { recognizer->add_option(ASYNC_OPTION); }
+	| WEAK_DIRECTIVE { recognizer->add_option(WEAK_DIRECTIVE); }
 	| TENSORMAP_OPTION { recognizer->add_option(TENSORMAP_OPTION); }
 	| READ_OPTION { recognizer->add_option(READ_OPTION); }
 	| BULK_GROUP_OPTION { recognizer->add_option(BULK_GROUP_OPTION); }
 	| CLUSTER_OPTION { recognizer->add_option(CLUSTER_OPTION); }
 	| MULTICAST_CLUSTER_OPTION { recognizer->add_option(MULTICAST_CLUSTER_OPTION); }
+	| CLC_MULTICAST_ALL_OPTION { recognizer->add_option(CLC_MULTICAST_ALL_OPTION); }
+	| CLC_IS_CANCELED_OPTION { recognizer->add_option(CLC_IS_CANCELED_OPTION); }
+	| CLC_GET_X_OPTION { recognizer->add_option(CLC_GET_X_OPTION); }
+	| CLC_GET_Y_OPTION { recognizer->add_option(CLC_GET_Y_OPTION); }
+	| CLC_GET_Z_OPTION { recognizer->add_option(CLC_GET_Z_OPTION); }
+	| CLC_GET_XYZ_OPTION { recognizer->add_option(CLC_GET_XYZ_OPTION); }
 	| INVAL_OPTION { recognizer->add_option(INVAL_OPTION); }
 	| MBARRIER_INIT_OPTION { recognizer->add_option(MBARRIER_INIT_OPTION); }
+	| M16N8_OPTION { recognizer->add_option(M16N8_OPTION); }
 	| M8N8_OPTION { recognizer->add_option(M8N8_OPTION); }
 	| TRANS_OPTION { recognizer->add_option(TRANS_OPTION); }
 	| X1_OPTION { recognizer->add_option(X1_OPTION); }
@@ -745,6 +808,32 @@ option: type_spec
 	| X4_OPTION { recognizer->add_option(X4_OPTION); }
 	| X16_OPTION { recognizer->add_option(X16_OPTION); }
 	| X32_OPTION { recognizer->add_option(X32_OPTION); }
+	| X8_OPTION { recognizer->add_option(X8_OPTION); }
+	| X64_OPTION { recognizer->add_option(X64_OPTION); }
+	| X128_OPTION { recognizer->add_option(X128_OPTION); }
+	| TCGEN05_WS_OPTION { recognizer->add_option(TCGEN05_WS_OPTION); }
+	| TCGEN05_COLLECTOR_B0_DISCARD_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B0_DISCARD_OPTION); }
+	| TCGEN05_COLLECTOR_B0_FILL_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B0_FILL_OPTION); }
+	| TCGEN05_COLLECTOR_B0_USE_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B0_USE_OPTION); }
+	| TCGEN05_COLLECTOR_B0_LASTUSE_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B0_LASTUSE_OPTION); }
+	| TCGEN05_COLLECTOR_B1_DISCARD_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B1_DISCARD_OPTION); }
+	| TCGEN05_COLLECTOR_B1_FILL_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B1_FILL_OPTION); }
+	| TCGEN05_COLLECTOR_B1_USE_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B1_USE_OPTION); }
+	| TCGEN05_COLLECTOR_B1_LASTUSE_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B1_LASTUSE_OPTION); }
+	| TCGEN05_COLLECTOR_B2_DISCARD_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B2_DISCARD_OPTION); }
+	| TCGEN05_COLLECTOR_B2_FILL_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B2_FILL_OPTION); }
+	| TCGEN05_COLLECTOR_B2_USE_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B2_USE_OPTION); }
+	| TCGEN05_COLLECTOR_B2_LASTUSE_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B2_LASTUSE_OPTION); }
+	| TCGEN05_COLLECTOR_B3_DISCARD_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B3_DISCARD_OPTION); }
+	| TCGEN05_COLLECTOR_B3_FILL_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B3_FILL_OPTION); }
+	| TCGEN05_COLLECTOR_B3_USE_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B3_USE_OPTION); }
+	| TCGEN05_COLLECTOR_B3_LASTUSE_OPTION { recognizer->add_option(TCGEN05_COLLECTOR_B3_LASTUSE_OPTION); }
+	| TCGEN05_BLOCK_SCALE_OPTION { recognizer->add_option(TCGEN05_BLOCK_SCALE_OPTION); }
+	| TCGEN05_BLOCK32_OPTION { recognizer->add_option(TCGEN05_BLOCK32_OPTION); }
+	| TCGEN05_SCALE_VEC_1X_OPTION { recognizer->add_option(TCGEN05_SCALE_VEC_1X_OPTION); }
+	| TCGEN05_SCALE_VEC_2X_OPTION { recognizer->add_option(TCGEN05_SCALE_VEC_2X_OPTION); }
+	| TCGEN05_SCALE_VEC_4X_OPTION { recognizer->add_option(TCGEN05_SCALE_VEC_4X_OPTION); }
+	| TCGEN05_BLOCK16_OPTION { recognizer->add_option(TCGEN05_BLOCK16_OPTION); }
 	| TCGEN05_CTA_GROUP_1_OPTION { recognizer->add_option(TCGEN05_CTA_GROUP_1_OPTION); }
 	| TCGEN05_CTA_GROUP_2_OPTION { recognizer->add_option(TCGEN05_CTA_GROUP_2_OPTION); }
 	| TCGEN05_KIND_F16_OPTION { recognizer->add_option(TCGEN05_KIND_F16_OPTION); }
@@ -885,13 +974,7 @@ vector_component_tail: /* empty */
 		| COMMA vector_component vector_component_tail
 	;
 
-tex_vector_operand: LEFT_BRACE IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_2vector_operand($2,$4); }
-		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_3vector_operand($2,$4,$6); }
-		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_4vector_operand($2,$4,$6,$8); }
-		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_5vector_operand($2,$4,$6,$8,$10); }
-		| LEFT_BRACE IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER COMMA IDENTIFIER RIGHT_BRACE { recognizer->add_8vector_operand($2,$4,$6,$8,$10,$12,$14,$16); }
-		| LEFT_BRACE IDENTIFIER RIGHT_BRACE { recognizer->add_1vector_operand($2); }
-	;
+tex_vector_operand: vector_operand;
 
 tex_operand: LEFT_SQUARE_BRACKET IDENTIFIER COMMA { recognizer->add_scalar_operand($2); }
 		tex_vector_operand 

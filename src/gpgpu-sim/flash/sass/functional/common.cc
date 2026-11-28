@@ -1,3 +1,5 @@
+#include "../../bfloat_conversion.h"
+#include "../../fp16_conversion.h"
 #include "internal.h"
 
 #include <cmath>
@@ -7,8 +9,6 @@
 namespace flash_gpgpu_sim {
 namespace sass {
 namespace functional_detail {
-
-std::mutex global_atomic_mutex;
 
 step_result unsupported(const instruction &inst, const std::string &reason) {
   std::ostringstream detail;
@@ -229,10 +229,15 @@ bool evaluate_address(const operand &address, const warp_state &state,
 }
 
 bool evaluate_shared_address(const operand &address, const warp_state &state,
-                             unsigned lane, uint64_t &value) {
+                             unsigned lane, uint64_t &value,
+                             const execution_context *context) {
   if (!evaluate_address(address, state, lane, value))
     return false;
   value = static_cast<uint32_t>(value);
+  // LDS/STS address the issuer CTA. ptxas may retain its cluster rank bits
+  // in a cvta-derived pointer; they are not part of the local byte offset.
+  if (context && context->cluster)
+    value &= 0xffffffu;
   return true;
 }
 
@@ -266,6 +271,8 @@ bool read_special_register(const operand &source,
     value = context.cta_id_z;
   else if (source.text == "SR_CgaCtaId")
     value = context.cga_cta_id;
+  else if (source.text == "SR_CgaCtaId")
+    value = context.cga_cta_id;
   else if (source.text == "SR_VIRTUALSMID")
     value = context.virtual_smid;
   else if (source.text == "SR_SWINHI")
@@ -289,20 +296,7 @@ float bits_float(uint32_t bits) {
   return value;
 }
 
-float half_float(uint16_t bits) {
-  const uint32_t sign = static_cast<uint32_t>(bits & 0x8000u) << 16;
-  const uint32_t exponent = (bits >> 10) & 0x1fu;
-  const uint32_t mantissa = bits & 0x3ffu;
-  if (exponent == 0) {
-    if (mantissa == 0)
-      return bits_float(sign);
-    const float magnitude = std::ldexp(static_cast<float>(mantissa), -24);
-    return sign == 0 ? magnitude : -magnitude;
-  }
-  if (exponent == 0x1f)
-    return bits_float(sign | 0x7f800000u | (mantissa << 13));
-  return bits_float(sign | ((exponent + 112u) << 23) | (mantissa << 13));
-}
+float half_float(uint16_t bits) { return fp16_to_f32(bits); }
 
 float bfloat_float(uint16_t bits) {
   return bits_float(static_cast<uint32_t>(bits) << 16);
@@ -352,6 +346,13 @@ uint16_t float_half_rn(uint32_t bits) {
   return sign | static_cast<uint16_t>(half_exponent << 10) |
          static_cast<uint16_t>(rounded);
 }
+
+float flush_subnormal(float value) {
+  return std::fpclassify(value) == FP_SUBNORMAL ? std::copysign(0.0f, value)
+                                                : value;
+}
+
+uint16_t float_bfloat_rn(float value) { return f32_to_bf16_rn(value); }
 
 } // namespace functional_detail
 } // namespace sass

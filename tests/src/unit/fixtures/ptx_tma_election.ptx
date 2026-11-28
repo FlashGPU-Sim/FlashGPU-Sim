@@ -1,0 +1,139 @@
+.version 8.8
+.target sm_100a
+.address_size 64
+.shared .align 16 .b8 elected_tma_scratch[128];
+.shared .align 8 .b64 elected_tma_barrier;
+
+.visible .entry explicit_elected_tma_region_smoke(
+    .param .u64 input)
+{
+    .reg .pred %p<4>;
+    .reg .u32 %r<4>;
+    .reg .u64 %rd<5>;
+
+    ld.param.u64 %rd1, [input];
+    cvta.shared.u64 %rd2, elected_tma_scratch;
+    cvta.shared.u64 %rd3, elected_tma_barrier;
+
+    // This is the bare-TMA form used by DeepGEMM: one explicit election owns
+    // the whole producer region, so neither transfer needs a synthesized
+    // per-command election proxy.
+    elect.sync %r1|%p1, -1;
+    not.pred %p2, %p1;
+    @%p2 bra explicit_tma_join;
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes
+        [%rd2], [%rd1], 16, [%rd3];
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes
+        [%rd2+16], [%rd1+16], 16, [%rd3];
+explicit_tma_join:
+    ret;
+}
+
+.visible .entry implicit_lane0_tma_region_smoke(
+    .param .u64 input)
+{
+    .reg .pred %p<4>;
+    .reg .u32 %r<4>;
+    .reg .u64 %rd<5>;
+
+    ld.param.u64 %rd1, [input];
+    cvta.shared.u64 %rd2, elected_tma_scratch;
+    cvta.shared.u64 %rd3, elected_tma_barrier;
+    mov.u32 %r1, %laneid;
+    setp.eq.u32 %p1, %r1, 0;
+    @!%p1 bra implicit_tma_join;
+    // ptxas may synthesize ELECT/reconvergence around these commands, but the
+    // PTX contains no explicit election. They must retain the hidden-lowering
+    // issue proxy in timing simulation.
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes
+        [%rd2], [%rd1], 16, [%rd3];
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes
+        [%rd2+16], [%rd1+16], 16, [%rd3];
+implicit_tma_join:
+    ret;
+}
+
+.visible .entry deepgemm_elected_tma_region_smoke(
+    .param .u64 input)
+{
+    .reg .pred %p<8>;
+    .reg .u32 %r<8>;
+    .reg .u64 %rd<5>;
+
+    ld.param.u64 %rd1, [input];
+    cvta.shared.u64 %rd2, elected_tma_scratch;
+    cvta.shared.u64 %rd3, elected_tma_barrier;
+    mov.u32 %r1, 0;
+    elect.sync %r2|%p1, -1;
+    @%p1 mov.u32 %r1, 1;
+    mov.u32 %r3, %r2;
+    setp.eq.u32 %p2, %r1, 0;
+    @%p2 bra deepgemm_tma_join;
+
+    // Match the production shape more closely than the direct-not fixture:
+    // the elected predicate flows through a scalar selected flag, and the
+    // leader-only region contains its own loop/control flow.
+    mov.u32 %r4, 0;
+deepgemm_tma_loop:
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes
+        [%rd2], [%rd1], 16, [%rd3];
+    add.u32 %r4, %r4, 1;
+    setp.lt.u32 %p3, %r4, 2;
+    @%p3 bra deepgemm_tma_loop;
+deepgemm_tma_join:
+    ret;
+}
+
+.visible .entry external_entry_elected_tma_smoke(
+    .param .u64 input,
+    .param .u32 bypass)
+{
+    .reg .pred %p<8>;
+    .reg .u32 %r<8>;
+    .reg .u64 %rd<5>;
+
+    ld.param.u64 %rd1, [input];
+    ld.param.u32 %r1, [bypass];
+    cvta.shared.u64 %rd2, elected_tma_scratch;
+    cvta.shared.u64 %rd3, elected_tma_barrier;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra external_tma_body;
+    elect.sync %r2|%p2, -1;
+    not.pred %p3, %p2;
+    @%p3 bra external_tma_join;
+external_tma_body:
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes
+        [%rd2], [%rd1], 16, [%rd3];
+external_tma_join:
+    ret;
+}
+
+.visible .entry external_suffix_elected_tma_smoke(
+    .param .u64 input,
+    .param .u32 other_role)
+{
+    .reg .pred %p<8>;
+    .reg .u32 %r<8>;
+    .reg .u64 %rd<5>;
+
+    ld.param.u64 %rd1, [input];
+    ld.param.u32 %r1, [other_role];
+    cvta.shared.u64 %rd2, elected_tma_scratch;
+    cvta.shared.u64 %rd3, elected_tma_barrier;
+    setp.ne.u32 %p1, %r1, 0;
+    @%p1 bra other_role_body;
+    elect.sync %r2|%p2, -1;
+    not.pred %p3, %p2;
+    @%p3 bra shared_role_join;
+
+    // This prefix is dominated by the election and remains safe to mark.
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes
+        [%rd2], [%rd1], 16, [%rd3];
+other_role_body:
+    // The dispatch edge above bypasses the election, so this suffix must keep
+    // the hidden PTX-to-SASS lowering proxy.
+    cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes
+        [%rd2+16], [%rd1+16], 16, [%rd3];
+shared_role_join:
+    ret;
+}

@@ -1,4 +1,8 @@
 #include "ld_st_matrix.h"
+#include "matrix_byte_layout.h"
+#include "panic.h"
+#include "shared_address.h"
+#include "tb_cluster.h"
 
 #include "../../cuda-sim/ptx_ir.h"
 #include "../gpu-sim.h"
@@ -79,6 +83,7 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
     case ALIGNED_OPTION:
       is_aligned = true;
       break;
+    case M16N8_OPTION:
     case M8N8_OPTION:
       matrix_shape = option;
       break;
@@ -93,6 +98,8 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
       break;
     case X4_OPTION:
       num_matrixs = 4;
+      break;
+    case CTA_OPTION:
       break;
     case B8_TYPE:
     case B16_TYPE:
@@ -109,6 +116,65 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
 
   for (auto scalar_type_option : pI->get_scalar_type()) {
     scalar_type = scalar_type_option;
+  }
+
+  if (matrix_shape == M16N8_OPTION) {
+    auto fail = [&]() {
+      flash_gpgpu_sim::panic("unsupported stmatrix.m16n8 form/address: " +
+                             pI->to_string());
+    };
+    if (is_load || scalar_type != B8_TYPE || !is_transpose || !is_sync ||
+        !is_aligned ||
+        (num_matrixs != 1 && num_matrixs != 2 && num_matrixs != 4) ||
+        pI->get_num_operands() != 2 || inst.active_count() != 32 ||
+        !pI->src1().is_vector() ||
+        pI->src1().get_vect_nelem() != static_cast<unsigned>(num_matrixs))
+      fail();
+    const auto space = pI->get_space();
+    const bool explicit_shared =
+        space == shared_space || pI->membar_level() == CTA_OPTION;
+    if (!explicit_shared && space != generic_space && space != undefined_space)
+      fail();
+    new_addr_type bases[32]{};
+    for (int lane = 0; lane < num_matrixs * 8; ++lane) {
+      auto *owner = core->get_thread_info()[tid_lane0 + lane];
+      const uint64_t raw =
+          owner->get_operand_value(pI->dst(), pI->dst(), U64_TYPE, owner, 0)
+              .u64;
+      if (explicit_shared) {
+        if (raw > UINT32_MAX)
+          fail();
+        bases[lane] = flash_gpgpu_sim::shared_cluster_offset(raw);
+      } else {
+        unsigned sm;
+        addr_t offset;
+        if (!flash_gpgpu_sim::decode_shared_generic(raw, &sm, &offset) ||
+            sm != owner->get_hw_sid())
+          fail();
+        bases[lane] = offset;
+      }
+      if (bases[lane] % 16)
+        fail();
+    }
+    for (unsigned lane = 0; lane < 32; ++lane) {
+      auto *owner = core->get_thread_info()[tid_lane0 + lane];
+      ptx_reg_t values[4];
+      owner->get_vector_operand_values(pI->src1(), values, num_matrixs);
+      new_addr_type addresses[16]{};
+      for (int matrix = 0; matrix < num_matrixs; ++matrix) {
+        for (unsigned byte = 0; byte < 4; ++byte) {
+          const auto loc =
+              flash_gpgpu_sim::stmatrix_m16n8_trans_byte(lane, byte, matrix);
+          const auto address = bases[loc.address_lane] + loc.offset;
+          const uint8_t value = values[matrix].u32 >> (8 * byte);
+          owner->m_shared_mem->write(address, 1, &value, owner, pI);
+          addresses[matrix * 4 + byte] = address;
+        }
+      }
+      inst.set_addr(lane, addresses, num_matrixs * 4);
+    }
+    inst.data_size = 1;
+    return;
   }
 
   /**
@@ -147,7 +213,7 @@ static void handle_ld_st_matrix_inst_impl(const ptx_instruction *pI,
 
   auto get_u32_value = [](ptx_thread_info *thread, const operand_info &op) {
     ptx_reg_t reg = thread->get_operand_value(op, op, U32_TYPE, thread, 0);
-    return reg.u32;
+    return flash_gpgpu_sim::shared_cluster_offset(reg.u32);
   };
 
   // Get the address operand reference based on direction

@@ -161,7 +161,7 @@ public:
     if (!inst.active(t))
       return;
     if (inst.isatomic())
-      core_.m_warp[inst.warp_id()]->inc_n_atomic();
+      core_.m_warp[inst.warp_id()]->inc_n_atomic(inst.is_async_reduction());
     if (inst.space.is_local() && (inst.is_load() || inst.is_store())) {
       new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
       unsigned num_addrs;

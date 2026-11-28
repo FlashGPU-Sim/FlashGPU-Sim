@@ -24,6 +24,9 @@ class ptx_instruction;
 #define TMA_DTYPE_F32_FTZ 10u
 #define TMA_DTYPE_TF32 11u
 #define TMA_DTYPE_TF32_FTZ 12u
+#define TMA_DTYPE_16U4_ALIGN8B 13u
+#define TMA_DTYPE_16U4_ALIGN16B 14u
+#define TMA_DTYPE_16U6_ALIGN16B 15u
 
 // Interleave layout modes (in bytes)
 #define TMA_INTERLEAVE_NONE 0u
@@ -70,6 +73,9 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
   // Helpers
   uint32_t get_element_size() const {
     switch (fields.tensorDataType) {
+    case TMA_DTYPE_16U4_ALIGN8B:
+    case TMA_DTYPE_16U4_ALIGN16B:
+    case TMA_DTYPE_16U6_ALIGN16B:
     case TMA_DTYPE_U8:
       return 1;
     case TMA_DTYPE_U16:
@@ -77,6 +83,7 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
     case TMA_DTYPE_U32:
       return 4;
     case TMA_DTYPE_U64:
+    case TMA_DTYPE_S64:
       return 8;
     case TMA_DTYPE_F16:
       return 2;
@@ -92,9 +99,35 @@ typedef union __attribute__((aligned(128))) tensormap_descriptor_t {
   }
   // Pure helpers (inline so unit tests can use them without linking
   // tensormap.cc).
+  bool is_packed_u4() const {
+    return fields.tensorDataType == TMA_DTYPE_16U4_ALIGN8B ||
+           fields.tensorDataType == TMA_DTYPE_16U4_ALIGN16B;
+  }
+  uint32_t get_tile_smem_size_bytes() const {
+    if (fields.tensorDataType != TMA_DTYPE_16U4_ALIGN16B)
+      return get_tile_size_bytes();
+    if (fields.tensorRank > 4)
+      return 0;
+    uint64_t bytes = 1;
+    for (unsigned d = 0; d < num_dims(); ++d) {
+      bytes *= fields.boxDim[d];
+      if (bytes > UINT32_MAX)
+        return 0;
+    }
+    return bytes;
+  }
   uint32_t get_tile_size_bytes() const {
     if (fields.tensorRank > 4)
       return 0;
+    if (is_packed_u4()) {
+      uint64_t bytes = (uint64_t(fields.boxDim[0]) + 1) / 2;
+      for (unsigned d = 1; d < num_dims(); ++d) {
+        bytes *= fields.boxDim[d];
+        if (bytes > UINT32_MAX)
+          return 0;
+      }
+      return bytes;
+    }
     uint32_t total_elements = 1;
     uint32_t dims = num_dims();
     for (uint32_t i = 0; i < dims; i++) {

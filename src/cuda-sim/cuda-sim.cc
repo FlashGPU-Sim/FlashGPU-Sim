@@ -34,6 +34,7 @@
 
 #include "instructions.h"
 #include "ptx_ir.h"
+#include "../gpgpu-sim/flash/ptx_sched/ptx_scheduler.h"
 class ptx_recognizer;
 typedef void *yyscan_t;
 #include <stdio.h>
@@ -379,6 +380,13 @@ void function_info::alloc_dyn_shared_mem(int shared_mem_size) {
         (shared_mem_size & (shared_mem_size - 1)) == 0) {
       alignto = shared_mem_size;
     }
+    // The launch byte count is not the symbol's alignment requirement.
+    // Preserve the legacy minimum while honoring explicit PTX .align,
+    // including zero-byte launches that still form the shared address.
+    const int declared_alignment =
+        m_local_dyn_shared_mem_symbol->type()->get_key().get_alignment_spec();
+    if (declared_alignment > 0)
+      alignto = std::max(alignto, static_cast<unsigned>(declared_alignment));
     addr_t addr_pad = alignto ? ((alignto - (addr % alignto)) % alignto) : 0;
         printf("GPGPU-Sim PTX: Allocating local dyn shared mem symbol %s from "
           "0x%llx to 0x%llx (size %d)\n",
@@ -424,6 +432,7 @@ void function_info::ptx_assemble() {
 
   recognize_dynamic_shared_mem();
   flash_gpgpu_sim::run_ptx_reorder(this);
+  flash_gpgpu_sim::mark_explicit_elected_tma_regions(m_instructions);
 
   fflush(stdout);
   std::list<ptx_instruction *>::iterator i;
@@ -750,9 +759,16 @@ std::string cuda_sim::ptx_get_insn_str(address_type pc) {
   return finfo->get_insn_str(pc);
 }
 
+bool ptx_instruction::is_cluster_async_store() const {
+  return m_opcode == ST_OP &&
+      std::find(m_options.begin(), m_options.end(), ASYNC_OPTION) != m_options.end() &&
+      std::find(m_options.begin(), m_options.end(), TMA_MBAR_COMPLETE_BYTES) != m_options.end();
+}
+
 void ptx_instruction::set_fp_or_int_archop() {
   oprnd_type = UN_OP;
-  if ((m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
+  if ((m_opcode == TRAP_OP) || (m_opcode == BRKPT_OP) || (m_opcode == ST_BULK_OP) ||
+      (m_opcode == MEMBAR_OP) || (m_opcode == SSY_OP) || (m_opcode == BRA_OP) ||
       (m_opcode == BAR_OP) || (m_opcode == RET_OP) || (m_opcode == RETP_OP) ||
       (m_opcode == NOP_OP) || (m_opcode == EXIT_OP) || (m_opcode == CALLP_OP) ||
       (m_opcode == CALL_OP) || (m_opcode == TENSORMAP_OP) || (m_opcode == FENCE_OP) ||
@@ -793,7 +809,8 @@ void ptx_instruction::set_fp_or_int_archop() {
 
 void ptx_instruction::set_mul_div_or_other_archop() {
   sp_op = OTHER_OP;
-  if ((m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
+  if ((m_opcode != TRAP_OP) && (m_opcode != BRKPT_OP) && (m_opcode != ST_BULK_OP) &&
+      (m_opcode != MEMBAR_OP) && (m_opcode != SSY_OP) && (m_opcode != BRA_OP) &&
       (m_opcode != BAR_OP) && (m_opcode != EXIT_OP) && (m_opcode != NOP_OP) &&
       (m_opcode != RETP_OP) && (m_opcode != RET_OP) && (m_opcode != CALLP_OP) &&
       (m_opcode != CALL_OP) && (m_opcode != TENSORMAP_OP) && (m_opcode != FENCE_OP) &&
@@ -1204,6 +1221,7 @@ void ptx_instruction::set_opcode_and_latency() {
   bool packed_timing = false;
   bool int_logic_timing = false;
   switch (m_opcode) {
+    case LOP3_OP:
     case AND_OP:
     case OR_OP:
     case XOR_OP:
@@ -1269,6 +1287,9 @@ void ptx_instruction::set_opcode_and_latency() {
       initiation_interval = cp_async_wait_init_val;
       break;
     case ST_OP:
+      op = is_cluster_async_store() ? MBARRIER_OP : STORE_OP;
+      break;
+    case ST_BULK_OP:
       op = STORE_OP;
       break;
     case MMA_ST_OP:
@@ -1284,6 +1305,14 @@ void ptx_instruction::set_opcode_and_latency() {
       op = LOAD_OP;
       mem_op = TEX;
       break;
+    case RED_OP: {
+      const auto options = get_options();
+      set_async_reduction(std::find(options.begin(), options.end(),
+                                    ASYNC_OPTION) != options.end());
+      set_release_memory(std::find(options.begin(), options.end(),
+                                   RELEASE_OPTION) != options.end());
+      [[fallthrough]];
+    }
     case ATOM_OP:
       op = LOAD_OP;
       break;
@@ -1377,7 +1406,12 @@ void ptx_instruction::set_opcode_and_latency() {
     }
     case STMATRIX_OP: {
       op = TENSOR_CORE_STORE_OP;
-      m_space_spec = shared_space;
+      // Preserve the operand's state space for byte-matrix generic addressing.
+      // The dynamic timing operation below always accesses shared memory.
+      const auto &options = get_options();
+      const bool byte_matrix =
+          std::find(options.begin(), options.end(), M16N8_OPTION) != options.end();
+      if (!byte_matrix) m_space_spec = shared_space;
       space.set_type(shared_space);
       for (int option : get_options()) {
         if (option == X1_OPTION) shared_mem_dispatch_cycles = 1;
@@ -1385,6 +1419,9 @@ void ptx_instruction::set_opcode_and_latency() {
         if (option == X4_OPTION) shared_mem_dispatch_cycles = 4;
       }
       assert(shared_mem_dispatch_cycles != 0);
+      // New byte forms provide all disjoint byte accesses, like native STSM;
+      // use the common shared-memory transaction path for both frontends.
+      if (byte_matrix) shared_mem_dispatch_cycles = 0;
       break;
     }
     case SST_OP:
@@ -1666,6 +1703,7 @@ void ptx_instruction::set_opcode_and_latency() {
         op = TENSOR_CORE_OP;
       }
       break;
+    case REDUX_OP:
     case SHFL_OP:
       latency = int_latency[5];
       initiation_interval = int_init[5];
@@ -1764,6 +1802,17 @@ static unsigned datatype2size(unsigned data_type) {
 }
 
 void ptx_instruction::pre_decode() {
+  tma_issue_form = tma_issue_form_t::NONE;
+  if (m_opcode == TMA_OP) {
+    bool group_control = false, paired = false;
+    for (int option : get_options()) {
+      group_control |= option == COMMIT_GROUP_OPTION || option == WAIT_GROUP_OPTION;
+      paired |= option == TCGEN05_CTA_GROUP_2_OPTION;
+    }
+    if (!group_control)
+      tma_issue_form = paired ? tma_issue_form_t::EXPLICIT
+                              : tma_issue_form_t::IMPLICIT;
+  }
   pc = m_PC;
   isize = m_inst_size;
   for (unsigned i = 0; i < MAX_OUTPUT_VALUES; i++) {
@@ -1832,6 +1881,10 @@ void ptx_instruction::pre_decode() {
         data_size = (unsigned)src2().get_literal_value().u64;
       }
     }
+  } else if (m_opcode == ST_BULK_OP) {
+    data_size = 8;
+    memory_op = memory_store;
+    space.set_type(shared_space);
   } else if (has_memory_read() || has_memory_write()) {
     unsigned to_type = get_type();
     data_size = datatype2size(to_type);
@@ -1896,7 +1949,7 @@ void ptx_instruction::pre_decode() {
       // else if( m_opcode == ST_OP )
       else if (m_opcode == MMA_ST_OP || m_opcode == ST_OP)
         cache_op = CACHE_WRITE_BACK;
-      else if (m_opcode == ATOM_OP)
+      else if (m_opcode == ATOM_OP || m_opcode == RED_OP)
         cache_op = CACHE_GLOBAL;
       break;
   }
@@ -1939,7 +1992,10 @@ void ptx_instruction::pre_decode() {
         }
       }
     } else {
-      if (o.is_reg() && !o.is_non_arch_reg()) {
+      if (is_cluster_async_store() && o.is_memory_operand() &&
+          o.get_symbol() && o.get_symbol()->type()->get_key().is_reg()) {
+        add_input(o.reg_num(), o.arch_reg_num());
+      } else if (o.is_reg() && !o.is_non_arch_reg()) {
         const symbol *pack_low = NULL;
         const symbol *pack_high = NULL;
         const symbol *logical_reg = o.get_symbol();
@@ -2130,6 +2186,10 @@ void ptx_instruction::pre_decode() {
       default:
         break;
     }
+  }
+  if (is_cluster_async_store()) {
+    mbarrier_static_info.operation = inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX;
+    mbarrier_static_info.per_lane_complete_tx = true;
   }
   set_mbarrier_static_info(mbarrier_static_info);
 
@@ -2733,8 +2793,17 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       // Tensorcore is warp synchronous operation. So these instructions needs
       // to be executed only once. To make the simulation faster removing the
       // redundant tensorcore operation
-      if (!tensorcore_op(inst_opcode) ||
-          ((tensorcore_op(inst_opcode)) && (lane_id == 0))) {
+      // Redux writes all participating destinations from one source snapshot.
+      // Select the first predicated-on lane, not necessarily lane zero.
+      unsigned redux_leader = 0;
+      if (inst_opcode == REDUX_OP) {
+        auto peers = get_core()->get_thread_info() + inst.warp_id_func() * MAX_WARP_SIZE;
+        while (redux_leader < MAX_WARP_SIZE &&
+               (!inst.get_active_mask().test(redux_leader) ||
+                !peers[redux_leader]->predicate_allows(*pI))) ++redux_leader;
+      }
+      if ((inst_opcode != REDUX_OP || lane_id == redux_leader) &&
+          (!tensorcore_op(inst_opcode) || lane_id == 0)) {
         switch (inst_opcode) {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) \
   case OP:                                         \
@@ -2817,7 +2886,7 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
              inst_opcode == LDMATRIX_OP || inst_opcode == STMATRIX_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();
-        if (pI->m_is_ldgsts) {
+        if (pI->m_is_ldgsts || inst_opcode == ST_BULK_OP) {
           insn_data_size = pI->data_size;
         } else {
           unsigned to_type = pI->get_type();
@@ -2833,11 +2902,13 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
                         false /*not atomic*/);
     }
 
-    if (pI->get_opcode() == ATOM_OP) {
+    if (pI->get_opcode() == ATOM_OP || pI->get_opcode() == RED_OP) {
       insn_memaddr = last_eaddr();
       insn_space = last_space();
-      inst.add_callback(lane_id, last_callback().function,
-                        last_callback().instruction, this, true /*atomic*/);
+      inst.add_callback(
+          lane_id, last_callback().function, last_callback().instruction, this,
+          true /*atomic*/,
+          pI->get_opcode() == RED_OP ? last_callback().action : nullptr);
       unsigned to_type = pI->get_type();
       insn_data_size = datatype2size(to_type);
     }
@@ -2933,7 +3004,7 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
              inst_opcode == LDMATRIX_OP || inst_opcode == STMATRIX_OP))) {
         inst.space = insn_space;
         inst.set_addr(lane_id, insn_memaddr);
-        if (pI->m_is_ldgsts) {
+        if (pI->m_is_ldgsts || inst_opcode == ST_BULK_OP) {
           inst.set_per_thread_memory_access_size(
               lane_id, last_memory_access_size());
         } else if (pI->get_vector() != 0 &&
@@ -2964,6 +3035,8 @@ using flash_gpgpu_sim::wgmma_wait_group_impl;
                 lane_id, insn_data_size * vector_width);
           }
         }
+        if (inst_opcode == ST_BULK_OP && last_memory_access_size() == 0)
+          inst.set_not_active(lane_id);
         inst.data_size = insn_data_size;  // simpleAtomicIntrinsics
         assert(inst.memory_op == insn_memory_op);
       }

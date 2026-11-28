@@ -1288,6 +1288,7 @@ bool has_floating_scalar_type(const ptx_instruction *inst) {
     case F16_TYPE:
     case F16X2_TYPE:
     case BF16_TYPE:
+    case BF16X2_TYPE:
     case TF32_TYPE:
     case E4M3_TYPE:
     case E5M2_TYPE:
@@ -4058,6 +4059,12 @@ void run_ptx_reorder(function_info *func) {
          ready_slack, stats.sass_guided_segments,
          stats.sass_guided_fallback_segments, stats.sass_guide_cursor,
          guide_total);
+}
+
+void detail::collect_ptx_registers(const ptx_instruction *inst,
+                                   std::set<const symbol *> &uses,
+                                   std::set<const symbol *> &defs) {
+  collect_inst_regs(inst, uses, defs);
 }
 
 } // namespace flash_gpgpu_sim

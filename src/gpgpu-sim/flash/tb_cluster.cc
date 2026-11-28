@@ -4,10 +4,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "../../cuda-sim/ptx_sim.h"
 #include "../gpu_topology.h"
 #include "../shader.h"
 
 namespace flash_gpgpu_sim {
+
+uint32_t ptx_local_shared_address(ptx_thread_info *thread, uint32_t offset) {
+  auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+  const unsigned rank =
+      core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
+  assert(rank < 16);
+  return shared_cluster_address(rank, offset);
+}
+
+bool decode_ptx_shared_cluster(ptx_thread_info *thread, uint32_t address,
+                               tb_cluster_target_t *target) {
+  auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
+  const unsigned rank = shared_cluster_rank(address);
+  return rank < 16 &&
+         resolve_tb_cluster_rank(core, thread->get_hw_ctaid(), rank, target);
+}
 
 static bool fill_target(shader_core_ctx *peer, unsigned slot,
                         tb_cluster_target_t *out) {

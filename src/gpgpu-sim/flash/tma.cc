@@ -2,7 +2,12 @@
 #include "panic.h"
 #include "tb_cluster.h"
 #include "tensormap.h"
+#include "tma_agu.h"
+#include "tma_cluster_targets.h"
+#include "tma_gather4.h"
+#include "tma_load_convert.h"
 #include "tma_opaque_tensormap.h"
+#include "tma_packed.h"
 #include "tma_reduction.h"
 #include "tma_store_source.h"
 #include <algorithm>
@@ -81,6 +86,14 @@ static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
                                               uint32_t mbar_addr,
                                               uint32_t size_in_bytes,
                                               uint16_t cta_mask);
+static void complete_tensor_mbarriers(shader_core_ctx *core, unsigned cta,
+                                      uint32_t bar, uint32_t bytes,
+                                      uint32_t targets) {
+  complete_cluster_mbarriers_masked(core, cta, bar, bytes, uint16_t(targets));
+  if (targets >> 16)
+    complete_cluster_mbarriers_masked(core, cta, bar, bytes,
+                                      uint16_t(targets >> 16));
+}
 static void
 multicast_smem_to_cluster(memory_space *src_smem, uint32_t smem_addr,
                           uint32_t size_in_bytes, ptx_thread_info *thread,
@@ -599,240 +612,6 @@ cache_tensormap_descriptor(inst_t::tma_dyn_info_t &tma_dyn_info,
 // Performance Simulation: TMA AGU (Address Generation Unit)
 //=============================================================================
 
-struct tma_agu_state_t {
-  // Mode and completion state
-  bool is_tensor = false;       // true=tensor mode, false=linear mode
-  bool done = true;             // true=iteration complete
-  bool is_fill_request = false; // true=current request is OOB fill
-
-  // Tensor mode state (multi-dimensional tile traversal)
-  uint32_t num_dims = 0;            // Number of dimensions (1-5)
-  uint32_t elem_size = 0;           // Element size in bytes
-  uint32_t box_dim[5] = {0};        // Tile dimensions [d0, d1, d2, d3, d4]
-  uint32_t global_dim[5] = {0};     // Global tensor dimensions
-  int32_t start_coords[5] = {0};    // Starting coordinates of this tile
-  uint64_t global_strides[5] = {0}; // Strides for each dimension
-  uint32_t tile_coords[5] = {0};    // Current position within tile (odometer)
-  uint64_t curr_row_addr = 0;       // Base physical address of current row
-  uint32_t offset_in_row = 0;       // Byte offset within current row
-  uint32_t row_bytes = 0;           // Total bytes in a row (dim0 extent)
-
-  // Cached OOB state (avoids per-sector dimension traversal)
-  bool row_is_oob = false;            // Higher-dim OOB: entire row is fill
-  uint32_t valid_row_start_bytes = 0; // First valid dim0 byte in the tile row
-  uint32_t valid_row_end_bytes = 0;   // One-past-last valid dim0 byte
-
-  // Linear mode state (simple 1D address range)
-  uint64_t linear_addr = 0;      // Current address
-  uint32_t linear_remaining = 0; // Remaining bytes
-};
-
-class tma_agu_unit_t {
-public:
-  void init_tensor(tma_agu_state_t &state, const tensormap_descriptor_t &tm,
-                   const int32_t start_coords[5]) {
-
-    if (!tm.is_valid()) {
-      assert(false && "TMA AGU ERROR: Invalid tensormap in init_tensor");
-    }
-
-    state = tma_agu_state_t(); // Reset to defaults
-    state.is_tensor = true;
-    state.num_dims = tm.num_dims();
-    state.elem_size = tm.get_element_size();
-
-    // Cache box dimensions and global dimensions
-    for (uint32_t d = 0; d < state.num_dims; d++) {
-      state.box_dim[d] = tm.fields.boxDim[d];
-      state.global_dim[d] = tm.fields.globalDim[d];
-      state.start_coords[d] = start_coords[d];
-    }
-
-    // Calculate strides: stride[0] = elem_size, stride[i] = globalStrides[i-1]
-    state.global_strides[0] = state.elem_size;
-    for (uint32_t d = 1; d < state.num_dims; d++) {
-      state.global_strides[d] = tm.fields.globalStrides[d - 1];
-    }
-
-    // Initialize tile coordinates to (0,0,...,0)
-    for (int i = 0; i < 5; i++) {
-      state.tile_coords[i] = 0;
-    }
-
-    // Calculate initial row address using signed coordinates.  OOB requests
-    // may precede the tensor base when OOB L2 traffic is enabled.
-    int64_t byte_offset = 0;
-    for (uint32_t d = 0; d < state.num_dims; d++) {
-      byte_offset += static_cast<int64_t>(start_coords[d]) *
-                     static_cast<int64_t>(state.global_strides[d]);
-    }
-    if (byte_offset < 0) {
-      state.curr_row_addr =
-          tm.fields.globalAddress - static_cast<uint64_t>(-byte_offset);
-    } else {
-      state.curr_row_addr =
-          tm.fields.globalAddress + static_cast<uint64_t>(byte_offset);
-    }
-
-    state.row_bytes = state.box_dim[0] * state.elem_size;
-    state.offset_in_row = 0;
-    state.done = false;
-
-    // Precompute the dim0 intersection with the tensor.  Both boundaries are
-    // tile-relative so a negative start coordinate produces leading fill
-    // bytes followed by valid data.
-    const int64_t row_start = start_coords[0];
-    const int64_t row_end = row_start + state.box_dim[0];
-    const int64_t valid_start = std::max<int64_t>(row_start, 0);
-    const int64_t valid_end = std::min<int64_t>(row_end, state.global_dim[0]);
-    if (valid_start < valid_end) {
-      state.valid_row_start_bytes =
-          static_cast<uint32_t>(valid_start - row_start) * state.elem_size;
-      state.valid_row_end_bytes =
-          static_cast<uint32_t>(valid_end - row_start) * state.elem_size;
-    } else {
-      state.valid_row_start_bytes = state.row_bytes;
-      state.valid_row_end_bytes = state.row_bytes;
-    }
-
-    // Precompute higher-dim OOB for first row (tile_coords all zero)
-    state.row_is_oob = false;
-    for (uint32_t d = 1; d < state.num_dims; d++) {
-      if (start_coords[d] < 0 ||
-          static_cast<uint32_t>(start_coords[d]) >= state.global_dim[d]) {
-        state.row_is_oob = true;
-        break;
-      }
-    }
-  }
-
-  void init_linear(tma_agu_state_t &state, uint64_t start_addr,
-                   uint32_t total_bytes) {
-    state = tma_agu_state_t(); // Reset to defaults
-    state.is_tensor = false;
-    state.linear_addr = start_addr;
-    state.linear_remaining = total_bytes;
-    state.done = (total_bytes == 0);
-  }
-
-  /**
-   * Generate next memory request using AGU
-   *
-   * For tensor mode:
-   *   - Traverses tile in row-major order
-   *   - Skips OOB coordinates (zero-padding)
-   *   - Breaks rows into configured request-granularity chunks
-   *
-   * For linear mode:
-   *   - Simple sequential address generation
-   *   - Aligns to configured request-granularity boundaries
-   */
-  bool gen_next_req(tma_agu_state_t &state, uint64_t &out_addr,
-                    uint32_t &out_size, uint32_t request_granularity) {
-    if (state.done)
-      return false;
-
-    if (!state.is_tensor) {
-      // Linear mode: simple sequential address generation
-      if (state.linear_remaining == 0) {
-        state.done = true;
-        return false;
-      }
-
-      state.is_fill_request = false; // Linear mode never fills
-      out_addr = state.linear_addr;
-      uint32_t to_boundary =
-          request_granularity - (state.linear_addr % request_granularity);
-      out_size =
-          std::min({request_granularity, state.linear_remaining, to_boundary});
-
-      state.linear_addr += out_size;
-      state.linear_remaining -= out_size;
-
-      if (state.linear_remaining == 0) {
-        state.done = true;
-      }
-
-    } else {
-      // Tensor mode: odometer-style multi-dimensional traversal
-      // OOB check using cached state (no per-sector dimension traversal)
-      if (state.row_is_oob) {
-        state.is_fill_request = true; // Higher-dim OOB: entire row is fill
-      } else {
-        state.is_fill_request =
-            state.offset_in_row < state.valid_row_start_bytes ||
-            state.offset_in_row >= state.valid_row_end_bytes;
-      }
-
-      // Calculate address: current_row_base + offset_within_row
-      out_addr = state.curr_row_addr + state.offset_in_row;
-
-      // Never mix fill and valid bytes in one request.
-      uint32_t row_remaining = state.row_bytes - state.offset_in_row;
-      if (!state.row_is_oob) {
-        if (state.offset_in_row < state.valid_row_start_bytes) {
-          row_remaining = std::min(row_remaining, state.valid_row_start_bytes -
-                                                      state.offset_in_row);
-        } else if (state.offset_in_row < state.valid_row_end_bytes) {
-          row_remaining = std::min(row_remaining, state.valid_row_end_bytes -
-                                                      state.offset_in_row);
-        }
-      }
-      uint32_t to_boundary =
-          request_granularity - (out_addr % request_granularity);
-      out_size = std::min({request_granularity, row_remaining, to_boundary});
-
-      // Advance position within row
-      state.offset_in_row += out_size;
-
-      // If row complete, advance to next row (odometer increment)
-      if (state.offset_in_row >= state.row_bytes) {
-        advance_to_next_row(state);
-      }
-    }
-
-    return true;
-  }
-
-private:
-  // Advance to next row using odometer-style increment of higher dimensions.
-  // Updates row_is_oob cache after advancing.
-  void advance_to_next_row(tma_agu_state_t &state) {
-    state.offset_in_row = 0;
-
-    // Increment coordinates starting from dimension 1 (dimension 0 is row)
-    bool carried_all = true;
-    for (uint32_t d = 1; d < state.num_dims; d++) {
-      state.tile_coords[d]++;
-      state.curr_row_addr += state.global_strides[d];
-
-      if (state.tile_coords[d] < state.box_dim[d]) {
-        carried_all = false;
-        break; // No carry - done advancing
-      }
-
-      // Carry to next dimension: reset this dimension
-      state.curr_row_addr -= state.box_dim[d] * state.global_strides[d];
-      state.tile_coords[d] = 0;
-    }
-
-    if (carried_all) {
-      state.done = true;
-      return;
-    }
-
-    // Recompute higher-dim OOB for new row (once per row, not per sector)
-    state.row_is_oob = false;
-    for (uint32_t d = 1; d < state.num_dims; d++) {
-      const int64_t coord =
-          static_cast<int64_t>(state.start_coords[d]) + state.tile_coords[d];
-      if (coord < 0 || coord >= state.global_dim[d]) {
-        state.row_is_oob = true;
-        break;
-      }
-    }
-  }
-};
 //=============================================================================
 // Performance Simulation: TMA Unit
 //=============================================================================
@@ -883,6 +662,9 @@ private:
     bool m_memory_complete = false;
     unsigned long long m_store_source_release_cycle = 0;
     uint32_t m_bytes_completed = 0;
+    uint32_t m_generated_bytes = 0;
+    uint32_t m_shared_tile_bytes = 0;
+    uint64_t m_shared_landing_done = 0;
     bool m_store_source_released = false;
     tma_agu_state_t agu_state; // AGU state for this transaction
 
@@ -908,6 +690,9 @@ private:
       m_memory_complete = false;
       m_store_source_release_cycle = 0;
       m_bytes_completed = 0;
+      m_generated_bytes = 0;
+      m_shared_tile_bytes = 0;
+      m_shared_landing_done = 0;
       m_store_source_released = false;
       agu_state = tma_agu_state_t(); // Reset to default state
       m_mf_issued_count = 0;
@@ -921,6 +706,38 @@ private:
   std::list<unsigned> issue_queue;
   std::unordered_map<unsigned, unsigned> m_mf_to_tx;
   std::unordered_map<unsigned, uint32_t> m_mf_pending_bytes;
+  std::unordered_map<unsigned, uint32_t> m_mf_tile_offset;
+
+  bool models_shared_landing(const tma_transaction_t &tx) const {
+    // Cluster/DSM landing retains its existing transport/service model.
+    // Qualified swizzles permute within 128B blocks; an aligned tile base
+    // therefore preserves the 128KiB region of each logical destination byte.
+    return m_shader_ctx->get_config()->gpgpu_shared_region_write_model &&
+           !m_shader_ctx->get_config()->gpgpu_dsm_enable &&
+           !is_write_transaction(tx) && !tx.m_static_info.multicast_cluster &&
+           !tx.m_dyn_info.mapped_cluster_copy &&
+           !tx.m_dyn_info.has_completion_mask && !tx.m_arch_arrive_cycle &&
+           tx.m_dyn_info.dst_addr % 128 == 0;
+  }
+
+  void reserve_shared_landing(tma_transaction_t &tx, uint32_t offset,
+                              uint32_t bytes) {
+    if (!models_shared_landing(tx) || !bytes)
+      return;
+    const uint64_t input = tx.m_dyn_info.size_in_bytes;
+    assert(input && uint64_t(offset) + bytes <= input);
+    // Include expanded packed-element padding in SRAM traffic. The AGU walks
+    // the logical tile in order; each parent request retains its tile offset,
+    // so out-of-order sector returns never change the destination region.
+    const uint64_t begin = uint64_t(offset) * tx.m_shared_tile_bytes / input;
+    const uint64_t end =
+        (uint64_t(offset) + bytes) * tx.m_shared_tile_bytes / input;
+    const auto regions = flash_gpgpu_sim::shared_bandwidth_t::split(
+        tx.m_dyn_info.dst_addr + begin, end - begin, 128 * 1024);
+    tx.m_shared_landing_done = std::max(
+        tx.m_shared_landing_done,
+        m_shader_ctx->reserve_tma_shared_write(current_cycle() + 1, regions));
+  }
 
   // Idealized TMA stores: do not complete at issue. Wait until the warp
   // commits the tx, then finish on a later cycle so wait_group can park.
@@ -1042,6 +859,8 @@ private:
     uint32_t smem_dst_addr; // for NoC peer data payload after tx erase
     bool sram_armed = false;
     unsigned sram_got = 0;
+    bool has_completion_mask = false;
+    uint32_t completion_mask = 0;
   };
   std::vector<pending_arrive_t> m_pending_arrives;
 
@@ -1056,6 +875,8 @@ private:
         lhs.mbar_addr != rhs.mbar_addr ||
         lhs.has_cta_mask != rhs.has_cta_mask || lhs.cta_mask != rhs.cta_mask ||
         lhs.mapped_cluster_copy != rhs.mapped_cluster_copy ||
+        lhs.has_completion_mask != rhs.has_completion_mask ||
+        lhs.completion_mask != rhs.completion_mask ||
         lhs.has_tensormap_descriptor != rhs.has_tensormap_descriptor)
       return false;
 
@@ -1144,6 +965,8 @@ private:
             : m_shader_ctx->get_config()->gpgpu_mbarrier_arrive_latency;
     if (is_cluster_read && !tx.m_arch_arrive_cycle)
       arrive_latency += m_shader_ctx->get_config()->gpgpu_tma_multicast_latency;
+    if (!is_write && tx.m_shared_landing_done > current_cycle())
+      arrive_latency += tx.m_shared_landing_done - current_cycle();
     if (!is_write && tx.m_arch_arrive_cycle) {
       tx.m_memory_complete = true;
       // Preserve the multicast penalty even when memory service exceeds
@@ -1158,10 +981,15 @@ private:
           {arrive_latency, cta_id, warp_id, tx.m_dyn_info.mbar_addr,
            tx.m_dyn_info.size_in_bytes, is_write, tx_uid, is_cluster_read,
            has_cta_mask, cta_mask, tx.m_dyn_info.mapped_cluster_copy,
-           (uint32_t)tx.m_dyn_info.dst_addr});
+           (uint32_t)tx.m_dyn_info.dst_addr, false, 0,
+           tx.m_dyn_info.has_completion_mask, tx.m_dyn_info.completion_mask});
     } else {
       if (!is_write) {
-        if (tx.m_dyn_info.mapped_cluster_copy) {
+        if (tx.m_dyn_info.has_completion_mask) {
+          complete_tensor_mbarriers(
+              m_shader_ctx, cta_id, tx.m_dyn_info.mbar_addr,
+              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.completion_mask);
+        } else if (tx.m_dyn_info.mapped_cluster_copy) {
           complete_mapped_cluster_peer_mbarrier(
               m_shader_ctx, cta_id, tx.m_dyn_info.mbar_addr,
               tx.m_dyn_info.size_in_bytes, cta_mask);
@@ -1196,6 +1024,7 @@ private:
     // Remove all mappings for this transaction
     for (auto map_it = m_mf_to_tx.begin(); map_it != m_mf_to_tx.end();) {
       if (map_it->second == tx_uid) {
+        m_mf_tile_offset.erase(map_it->first);
         map_it = m_mf_to_tx.erase(map_it);
       } else {
         ++map_it;
@@ -1472,6 +1301,7 @@ public:
               (multicast ? config->gpgpu_tma_multicast_latency : 0);
         }
 
+        tx.m_shared_tile_bytes = tx.m_dyn_info.size_in_bytes;
         // Initialize address generator
         if (tma_static_info.tma_type == inst_t::tma_static_info_t::TMA_TENSOR) {
           tensormap_descriptor_t tensormap;
@@ -1498,7 +1328,15 @@ public:
             fflush(stdout);
             exit(1);
           }
-          m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
+          tx.m_shared_tile_bytes =
+              tma_static_info.tensor_gather4
+                  ? 4 * tma_gather4_smem_row_bytes(tensormap)
+                  : tensormap.get_tile_smem_size_bytes();
+          if (tma_static_info.tensor_gather4)
+            m_agu.init_tensor_gather4(tx.agu_state, tensormap,
+                                      tma_dyn_info.coords);
+          else
+            m_agu.init_tensor(tx.agu_state, tensormap, tma_dyn_info.coords);
 
         } else {
           // For linear mode, AGU generates global memory addresses
@@ -1556,6 +1394,8 @@ public:
           m_deferred_idealized_writes.push_back(
               {tx_uid, cta_id, warp_id, /*commit_cycle=*/0});
         } else if (idealized) {
+          reserve_shared_landing(m_transactions.at(tx_uid), 0,
+                                 tx.m_dyn_info.size_in_bytes);
           finalize_transaction(tx_uid);
         } else {
           issue_queue.push_back(tx_uid);
@@ -1721,7 +1561,11 @@ public:
       // consumer before the actual L2/HBM responses have completed.
       if (tx.m_memory_complete && !tx.m_arch_arrive_done &&
           tx.m_arch_arrive_cycle && now >= tx.m_arch_arrive_cycle) {
-        if (tx.m_dyn_info.has_cta_mask) {
+        if (tx.m_dyn_info.has_completion_mask) {
+          complete_tensor_mbarriers(
+              m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
+              tx.m_dyn_info.size_in_bytes, tx.m_dyn_info.completion_mask);
+        } else if (tx.m_dyn_info.has_cta_mask) {
           if (tx.m_dyn_info.mapped_cluster_copy) {
             complete_mapped_cluster_peer_mbarrier(
                 m_shader_ctx, tx.m_cta_id, tx.m_dyn_info.mbar_addr,
@@ -1834,7 +1678,11 @@ public:
                          m_mf_inflight, m_response_fifo.size(),
                          m_shader_ctx->get_sid());
           if (!entry.is_write) {
-            if (entry.mapped_cluster_copy) {
+            if (entry.has_completion_mask) {
+              complete_tensor_mbarriers(m_shader_ctx, entry.cta_id,
+                                        entry.mbar_addr, entry.size_in_bytes,
+                                        entry.completion_mask);
+            } else if (entry.mapped_cluster_copy) {
               complete_mapped_cluster_peer_mbarrier(
                   m_shader_ctx, entry.cta_id, entry.mbar_addr,
                   entry.size_in_bytes, entry.cta_mask);
@@ -1988,6 +1836,13 @@ public:
       // L2 returns whole sectors, but edge sectors can contain fewer valid
       // bytes than their 32-byte packet size.
       unsigned bytes_to_add = response_payload_bytes(mf, parent_mf);
+      if (!is_write && models_shared_landing(tx)) {
+        const uint64_t relative = mf->get_addr() > parent_mf->get_addr()
+                                      ? mf->get_addr() - parent_mf->get_addr()
+                                      : 0;
+        reserve_shared_landing(tx, m_mf_tile_offset.at(parent_uid) + relative,
+                               bytes_to_add);
+      }
       tx.m_bytes_completed += bytes_to_add;
       record_tma_mf_response(is_write, bytes_to_add);
 
@@ -2005,6 +1860,7 @@ public:
         assert(tx.m_mf_tx_inflight_bytes >= parent_bytes);
         tx.m_mf_tx_inflight_bytes -= parent_bytes;
         m_mf_pending_bytes.erase(pending_it);
+        m_mf_tile_offset.erase(parent_uid);
         m_mf_to_tx.erase(parent_uid);
         parent_complete = true;
       } else {
@@ -2149,6 +2005,8 @@ public:
           while (m_agu.gen_next_req(tx.agu_state, addr, size,
                                     request_granularity)) {
             made_progress = true;
+            const uint32_t tile_offset = tx.m_generated_bytes;
+            tx.m_generated_bytes += size;
             bool first_request = tx.m_mf_issued_count == 0;
             if (first_request) {
               GPPRINTF_TMA(TMA,
@@ -2169,6 +2027,8 @@ public:
               if (request_bytes_per_cycle > 0)
                 m_request_byte_credit -= std::min<unsigned>(
                     m_request_byte_credit, std::max(size, request_granularity));
+              if (!is_write)
+                reserve_shared_landing(tx, tile_offset, size);
               tx.m_bytes_completed += size;
               record_tma_bytes_completed(size);
               if (tx.m_bytes_completed >= tx.m_dyn_info.size_in_bytes) {
@@ -2210,6 +2070,8 @@ public:
                 (unsigned long long)-1);
 
             m_mf_to_tx.emplace(mf->get_request_uid(), tx_uid);
+            if (models_shared_landing(tx))
+              m_mf_tile_offset.emplace(mf->get_request_uid(), tile_offset);
             m_mf_pending_bytes.emplace(mf->get_request_uid(), size);
 
             unsigned long long issue_cycle = current_cycle();
@@ -2633,9 +2495,12 @@ public:
       // NaN pattern (depends on dtype)
       nan_supported[dtype] = false;
       switch (dtype) {
-      case TMA_DTYPE_F32: {
+      case TMA_DTYPE_F32:
+      case TMA_DTYPE_F32_FTZ:
+      case TMA_DTYPE_TF32:
+      case TMA_DTYPE_TF32_FTZ: {
         nan_supported[dtype] = true;
-        uint32_t nan_val = 0x7FFFFFFF;
+        uint32_t nan_val = flash_gpgpu_sim::tma_float_oob_bits(dtype);
         for (uint32_t i = 0; i < CHUNK_SIZE / sizeof(uint32_t); i++) {
           memcpy(patterns[TMA_OOB_NAN][dtype] + i * sizeof(uint32_t), &nan_val,
                  sizeof(uint32_t));
@@ -2708,6 +2573,23 @@ static void do_tma_transfer(
     memory_space *shared_mem, memory_space *global_mem, uint32_t smem_addr,
     ptx_thread_info *thread, const ptx_instruction *pI, bool is_load,
     tma_reduction_op_t reduction_op = tma_reduction_op_t::NONE) {
+  if (tensormap.is_packed_u4()) {
+    std::vector<uint8_t> tile;
+    if (!is_load || !flash_gpgpu_sim::tma_packed4_load(
+                        tensormap, coords,
+                        [&](uint64_t address, void *data, size_t bytes) {
+                          global_mem->read(address, bytes, data);
+                          return true;
+                        },
+                        tile))
+      flash_gpgpu_sim::panic("unsupported packed U4 tensor transfer");
+    for (size_t offset = 0; offset < tile.size(); offset += 8)
+      shared_mem->write(smem_addr +
+                            flash_gpgpu_sim::tma_gather4_shared_offset(
+                                offset, smem_addr, tensormap.fields.swizzle),
+                        8, tile.data() + offset, thread, pI);
+    return;
+  }
   // For load operations, pre-fill the entire tile in shared memory with OOB
   // fill value
   if (is_load) {
@@ -2746,6 +2628,8 @@ static void do_tma_transfer(
     if (is_load) {
       // Load: global -> shared
       global_mem->read(global_req_addr, req_size, data_buffer);
+      flash_gpgpu_sim::convert_tma_load(tensormap.fields.tensorDataType,
+                                        data_buffer, req_size);
 
       GPPRINTF_THREAD_CORE(
           TMA, thread,
@@ -2983,13 +2867,29 @@ static void complete_cluster_mbarriers_masked(shader_core_ctx *core,
                                               uint32_t mbar_addr,
                                               uint32_t size_in_bytes,
                                               uint16_t cta_mask) {
-  for_each_cluster_peer_cta(
-      core, issuer_hw_cta,
-      [&](shader_core_ctx *peer_core, unsigned peer_slot) {
-        peer_core->try_complete_cluster_peer_mbarrier(peer_slot, mbar_addr,
-                                                      size_in_bytes);
-      },
-      /*include_issuer=*/true, /*use_mask=*/true, cta_mask);
+  // Timing barriers belong to resident CTAs, independently of the frontend's
+  // functional shared-memory representation. Native SASS has no ptx_thread_info
+  // shared pointer, so the payload-oriented peer resolver cannot be used here.
+  const unsigned group = core->get_cta_cluster_group(issuer_hw_cta);
+  if (group == unsigned(-1)) {
+    if (cta_mask & 1)
+      core->try_complete_cluster_peer_mbarrier(issuer_hw_cta, mbar_addr,
+                                               size_in_bytes);
+    return;
+  }
+  auto *cluster = core->get_cluster();
+  for (unsigned cid = 0; cid < cluster->num_cores(); ++cid) {
+    auto *peer = cluster->get_core(cid);
+    for (unsigned slot = 0; slot < MAX_CTA_PER_SHADER; ++slot) {
+      if (!peer->cta_slot_has_threads(slot) ||
+          peer->get_cta_cluster_group(slot) != group)
+        continue;
+      const unsigned rank = peer->get_cta_cluster_rank(slot);
+      if (rank < 16 && (cta_mask & (1u << rank)))
+        peer->try_complete_cluster_peer_mbarrier(slot, mbar_addr,
+                                                 size_in_bytes);
+    }
+  }
 }
 
 static bool rank_in_cta_mask(unsigned rank, uint16_t cta_mask) {
@@ -3042,25 +2942,20 @@ static tma_shared_target_t resolve_tma_shared_target(ptx_thread_info *thread,
                                                      bool cluster_space) {
   using namespace flash_gpgpu_sim;
   auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
-  unsigned rank = core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
-  if (address < SHARED_MEM_SIZE_MAX)
-    return {thread->m_shared_mem, address, rank, false};
-  unsigned owner = address / SHARED_MEM_SIZE_MAX - 1;
+  const unsigned local_rank =
+      core ? core->get_cta_cluster_rank(thread->get_hw_ctaid()) : 0;
+  const uint32_t offset = shared_cluster_offset(address);
+  if (!cluster_space)
+    return {thread->m_shared_mem, offset, local_rank, false};
   tb_cluster_target_t target;
-  if (!core || !resolve_tb_cluster_owner_sm(core, thread->get_hw_ctaid(), owner,
-                                            &target)) {
-    abort_tb_cluster_dead_owner(owner, thread->get_hw_sid(),
-                                thread->get_hw_ctaid(), address);
+  if (!decode_ptx_shared_cluster(thread, address, &target)) {
+    abort_tb_cluster_dead_rank(shared_cluster_rank(address),
+                               thread->get_hw_sid(), thread->get_hw_ctaid());
     abort();
   }
-  bool remote =
+  const bool remote =
       target.core != core || target.cta_slot != thread->get_hw_ctaid();
-  if (!cluster_space && remote) {
-    fprintf(stderr, "TMA ERROR: shared::cta address targets a peer CTA\n");
-    abort();
-  }
-  return {target.smem, static_cast<uint32_t>(address % SHARED_MEM_SIZE_MAX),
-          target.core->get_cta_cluster_rank(target.cta_slot), remote};
+  return {target.smem, offset, shared_cluster_rank(address), remote};
 }
 
 // Handle TMA linear copy instruction (non-tensor).
@@ -3234,23 +3129,19 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
   } else if (dst_option == CLUSTER_OPTION && src_option == CTA_OPTION &&
              completion_option == TMA_MBAR_COMPLETE_BYTES) {
     auto mapped_dst = get_operand_u32(thread, pI->dst());
-    auto src_addr = get_operand_u32(thread, pI->src1());
+    auto src_addr = shared_cluster_offset(get_operand_u32(thread, pI->src1()));
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
     auto mapped_mbar = get_operand_u32(thread, pI->src3());
-    if (mapped_dst < SHARED_MEM_SIZE_MAX || mapped_mbar < SHARED_MEM_SIZE_MAX) {
-      printf("TMA ERROR: shared::cluster destination is not mapa-derived\n");
-      pI->print_insn();
-      abort();
-    }
-    const unsigned owner_smid = mapped_dst / SHARED_MEM_SIZE_MAX - 1;
-    const uint32_t dst_addr = mapped_dst % SHARED_MEM_SIZE_MAX;
-    const uint32_t mbar_addr = mapped_mbar % SHARED_MEM_SIZE_MAX;
+    const uint32_t dst_addr = shared_cluster_offset(mapped_dst);
+    const uint32_t mbar_addr = shared_cluster_offset(mapped_mbar);
+    if (shared_cluster_rank(mapped_dst) != shared_cluster_rank(mapped_mbar))
+      reject_unsupported_tma(
+          "shared copy destination and barrier owners differ", pI);
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
     tb_cluster_target_t target;
-    if (!core || !resolve_tb_cluster_owner_sm(core, thread->get_hw_ctaid(),
-                                              owner_smid, &target)) {
-      abort_tb_cluster_dead_owner(owner_smid, thread->get_hw_sid(),
-                                  thread->get_hw_ctaid(), mapped_dst);
+    if (!decode_ptx_shared_cluster(thread, mapped_dst, &target)) {
+      abort_tb_cluster_dead_rank(shared_cluster_rank(mapped_dst),
+                                 thread->get_hw_sid(), thread->get_hw_ctaid());
       if (cluster_fatal_latched())
         return;
     }
@@ -3287,7 +3178,7 @@ static void handle_tma_copy(ptx_instruction *pI, ptx_thread_info *thread) {
              completion_option == BULK_GROUP_OPTION) {
     // global <- shared::cta with bulk group completion
     auto dst_addr = get_operand_u64(thread, pI->dst());
-    auto src_addr = get_operand_u32(thread, pI->src1());
+    auto src_addr = shared_cluster_offset(get_operand_u32(thread, pI->src1()));
     auto size_in_bytes = get_operand_u32(thread, pI->src2());
     auto laneid = thread->get_laneid();
 
@@ -3397,6 +3288,8 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   int dim_option = 0;
   int completion_option = 0;
   bool multicast_cluster = false;
+  bool gather4 = false;
+  bool paired = false;
   std::vector<int> space_options;
   for (auto op : options) {
     switch (op) {
@@ -3418,6 +3311,12 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
       break;
     case MULTICAST_CLUSTER_OPTION:
       multicast_cluster = true;
+      break;
+    case GATHER4_OPTION:
+      gather4 = true;
+      break;
+    case TCGEN05_CTA_GROUP_2_OPTION:
+      paired = true;
       break;
     case TENSOR_OPTION:
     case TILE_OPTION:
@@ -3453,6 +3352,10 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
   memory_space *shared_mem = thread->m_shared_mem;
   memory_space *global_mem = thread->get_global_memory();
   unsigned inst_dim = compute_inst_dim(dim_option);
+  if (gather4 && (inst_dim != 2 || src_option != GLOBAL_OPTION ||
+                  completion_option != TMA_MBAR_COMPLETE_BYTES))
+    reject_unsupported_tma(
+        "gather4 requires a 2D global load with byte completion", pI);
 
   if ((dst_option == CTA_OPTION || dst_option == CLUSTER_OPTION) &&
       src_option == GLOBAL_OPTION &&
@@ -3487,6 +3390,20 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[2], thread, tensormap, coords,
                      size_in_bytes);
+    const bool packed = !gather4 && tensormap.is_packed_u4();
+    if (packed && (!tma_packed4_supported(tensormap) || coords[0] % 16))
+      reject_unsupported_tma("unsupported packed U4 tensor geometry", pI);
+    if (!gather4 && ((!packed && tma_gather4_packed(tensormap)) ||
+                     tensormap.fields.swizzle > 3))
+      reject_unsupported_tma(
+          "extended packed/swizzle layouts are qualified for gather4 only", pI);
+    if (gather4) {
+      if (!pI->get_operands()[2].is_vector() ||
+          pI->get_operands()[2].get_vect_nelem() != 5 ||
+          !tma_gather4_supported(tensormap))
+        reject_unsupported_tma("invalid gather4 coordinates or tensor map", pI);
+      size_in_bytes = 4 * tma_gather4_gmem_row_bytes(tensormap);
+    }
 
     bool is_cluster = (dst_option == CLUSTER_OPTION);
     if (multicast_cluster && !is_cluster) {
@@ -3507,7 +3424,18 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
         multicast_cluster ? destination.offset : dst_addr;
     dst_addr = destination.offset;
     mbar_addr = barrier.offset;
-    if (!multicast_cluster && barrier.remote) {
+    uint32_t tensor_completions = 0;
+    if (gather4 || paired) {
+      const auto shape = thread->get_kernel().get_cluster_dim();
+      const unsigned cluster_size = std::max(1u, shape.x * shape.y * shape.z);
+      if (!multicast_cluster)
+        cta_mask = uint16_t(1u << destination.rank);
+      has_cta_mask = is_cluster || multicast_cluster || paired;
+      if (!tma_completion_targets(cluster_size, cta_mask, barrier.rank, paired,
+                                  multicast_cluster, tensor_completions))
+        reject_unsupported_tma(
+            "invalid tensor destination/completion CTA relationship", pI);
+    } else if (!multicast_cluster && barrier.remote) {
       cta_mask = static_cast<uint16_t>(1u << barrier.rank);
       has_cta_mask = true;
     }
@@ -3518,6 +3446,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
                                 : inst_t::tma_static_info_t::TMA_SHARED_CTA,
         .src_space = inst_t::tma_static_info_t::TMA_GLOBAL,
         .tensor_dim = inst_dim,
+        .tensor_gather4 = gather4,
         .bulk_wait_num = 0,
         .bulk_wait_read_only = false,
         .multicast_cluster = multicast_cluster,
@@ -3538,6 +3467,10 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     for (unsigned i = 0; i < 5; ++i)
       tma_dyn_info.coords[i] = coords[i];
     cache_tensormap_descriptor(tma_dyn_info, tensormap);
+    if (gather4 || paired) {
+      tma_dyn_info.has_completion_mask = true;
+      tma_dyn_info.completion_mask = tensor_completions;
+    }
     pI->set_tma_dyn_info(thread->get_laneid(), tma_dyn_info);
 
     auto *core = dynamic_cast<shader_core_ctx *>(thread->get_core());
@@ -3546,26 +3479,53 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     const bool multicast_to_issuer =
         multicast_cluster && rank_in_cta_mask(issuer_rank, cta_mask);
 
-    if (!multicast_cluster || multicast_to_issuer) {
-      do_tma_transfer(tensormap, coords,
-                      multicast_cluster ? shared_mem : destination.memory,
-                      global_mem, dst_addr, thread, pI, true);
-    }
-
-    if (multicast_to_issuer && core) {
-      multicast_smem_to_cluster(shared_mem, dst_addr, size_in_bytes, thread, pI,
-                                cta_mask);
-    } else if (multicast_cluster && !multicast_to_issuer && core) {
+    auto transfer = [&](memory_space *destination) {
+      if (!gather4) {
+        do_tma_transfer(tensormap, coords, destination, global_mem, dst_addr,
+                        thread, pI, true);
+        return;
+      }
+      std::vector<uint8_t> tile;
+      if (!tma_gather4_load(
+              tensormap, coords,
+              [&](uint64_t addr, void *data, size_t bytes) {
+                global_mem->read(addr, bytes, data);
+                return true;
+              },
+              tile))
+        reject_unsupported_tma("invalid gather4 payload address", pI);
+      for (size_t offset = 0; offset < tile.size(); offset += 8)
+        destination->write(
+            dst_addr + tma_gather4_shared_offset(offset, dst_addr,
+                                                 tensormap.fields.swizzle),
+            8, tile.data() + offset, thread, pI);
+    };
+    if (gather4) {
       for_each_cluster_peer_cta(
           core, thread->get_hw_ctaid(),
-          [&](shader_core_ctx *peer_core, unsigned peer_slot) {
-            memory_space *peer_smem = peer_core->get_cta_smem(peer_slot);
-            if (!peer_smem)
-              return;
-            do_tma_transfer(tensormap, coords, peer_smem, global_mem, dst_addr,
-                            thread, pI, true);
+          [&](shader_core_ctx *peer, unsigned slot) {
+            transfer(peer->get_cta_smem(slot));
           },
-          /*include_issuer=*/false, /*use_mask=*/true, cta_mask);
+          true, true, cta_mask);
+    } else {
+      if (!multicast_cluster || multicast_to_issuer)
+        transfer(multicast_cluster ? shared_mem : destination.memory);
+
+      if (multicast_to_issuer && core) {
+        multicast_smem_to_cluster(shared_mem, dst_addr,
+                                  tensormap.get_tile_smem_size_bytes(), thread,
+                                  pI, cta_mask);
+      } else if (multicast_cluster && !multicast_to_issuer && core) {
+        for_each_cluster_peer_cta(
+            core, thread->get_hw_ctaid(),
+            [&](shader_core_ctx *peer_core, unsigned peer_slot) {
+              memory_space *peer_smem = peer_core->get_cta_smem(peer_slot);
+              if (!peer_smem)
+                return;
+              transfer(peer_smem);
+            },
+            /*include_issuer=*/false, /*use_mask=*/true, cta_mask);
+      }
     }
 
   } else if (dst_option == GLOBAL_OPTION && src_option == CTA_OPTION) {
@@ -3575,7 +3535,7 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
            "cp.async.bulk.tensor.Nd.shared::cta.global");
 
     auto tensormap_addr = get_operand_u64(thread, pI->dst());
-    auto src_addr = get_operand_u32(thread, pI->src2());
+    auto src_addr = shared_cluster_offset(get_operand_u32(thread, pI->src2()));
 
     tensormap_descriptor_t tensormap;
     int32_t coords[5];
@@ -3583,6 +3543,12 @@ static void handle_tma_tensor(ptx_instruction *pI, ptx_thread_info *thread) {
     setup_tensor_tma(global_mem, tensormap_addr, inst_dim,
                      pI->get_operands()[1], thread, tensormap, coords,
                      size_in_bytes);
+    if (tensormap.fields.tensorDataType == TMA_DTYPE_TF32 ||
+        tensormap.fields.tensorDataType == TMA_DTYPE_TF32_FTZ)
+      reject_unsupported_tma("TF32 tensor stores are not qualified", pI);
+    if (tma_gather4_packed(tensormap) || tensormap.fields.swizzle > 3)
+      reject_unsupported_tma(
+          "extended packed/swizzle layouts are qualified for gather4 only", pI);
     if (reduction_op != tma_reduction_op_t::NONE &&
         !tma_tensor_reduction_supported(reduction_op,
                                         tensormap.fields.tensorDataType)) {

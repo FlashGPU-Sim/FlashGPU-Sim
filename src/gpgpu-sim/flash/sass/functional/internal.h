@@ -1,6 +1,7 @@
 #ifndef FLASH_GPGPU_SIM_SASS_FUNCTIONAL_INTERNAL_H
 #define FLASH_GPGPU_SIM_SASS_FUNCTIONAL_INTERNAL_H
 
+#include "../../integer_rmw.h"
 #include "functional.h"
 
 #include <cstddef>
@@ -14,7 +15,7 @@ namespace functional_detail {
 
 // Shared across CTA adapters and scalar/TMA global RMW implementations.
 // Host synchronization only: this does not model GPU timing resources.
-extern std::mutex global_atomic_mutex;
+using flash_gpgpu_sim::global_rmw_mutex;
 
 step_result unsupported(const instruction &inst, const std::string &reason);
 step_result memory_fault(const instruction &inst, memory_space space,
@@ -47,7 +48,8 @@ uint64_t evaluate_address_terms(const address_expression &address,
 bool evaluate_address(const operand &address, const warp_state &state,
                       unsigned lane, uint64_t &value);
 bool evaluate_shared_address(const operand &address, const warp_state &state,
-                             unsigned lane, uint64_t &value);
+                             unsigned lane, uint64_t &value,
+                             const execution_context *context = nullptr);
 bool read_special_register(const operand &source,
                            const execution_context &context, unsigned lane,
                            uint32_t &value);
@@ -58,14 +60,32 @@ float bfloat_float(uint16_t bits);
 float tf32_float(uint32_t bits);
 uint16_t float_half_rn(uint32_t bits);
 
+void register_bfloat_conversion_semantics(frontend &target);
 void register_data_movement_semantics(frontend &target);
 void register_integer_semantics(frontend &target);
+float flush_subnormal(float value);
+uint16_t float_bfloat_rn(float value);
+void register_mixed_precision_semantics(frontend &target);
+void register_float_conversion_semantics(frontend &target);
 void register_float_semantics(frontend &target);
 void register_control_semantics(frontend &target);
 void register_memory_semantics(frontend &target);
+void register_global_reduce_semantics(frontend &target);
+void register_global_memory_semantics(frontend &target);
 bool ensure_mbarrier_imported(uint64_t location, execution_context &context);
 void register_mbarrier_semantics(frontend &target);
 void register_bulk_copy_semantics(frontend &target);
+void register_clc_semantics(frontend &target);
+void register_cluster_store_semantics(frontend &target);
+void register_tmem_semantics(frontend &target);
+void register_tcgen_mma_semantics(frontend &target);
+step_result read_driver_tensor_map(const instruction &inst,
+                                   execution_context &context, uint64_t address,
+                                   unsigned rank,
+                                   const std::array<uint64_t, 8> &raw,
+                                   bool &recognized,
+                                   functional_tensor_map_view &view);
+
 void register_tma_semantics(frontend &target);
 void register_mma_semantics(frontend &target);
 void register_wgmma_semantics(frontend &target);

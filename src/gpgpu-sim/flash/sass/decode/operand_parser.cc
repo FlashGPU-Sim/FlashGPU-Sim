@@ -1,4 +1,5 @@
 #include "operand_parser.h"
+#include "tcgen_collector.h"
 
 #include "../frontend.h"
 
@@ -411,6 +412,36 @@ operand parse_operand(const std::string &input) {
   const std::string text = trim(input);
   if (text.empty())
     return operand{};
+  if (text.back() == ']' && text.rfind("tmem[", 0) == 0) {
+    operand address = parse_memory_address(text.substr(4));
+    if (address.kind == operand_kind::kMemoryAddress && !address.has_prefix &&
+        address.address_groups.size() == 1) {
+      bool valid = true;
+      for (const auto &term : address.address_groups[0].terms)
+        valid &= !term.wide && !term.negated &&
+                 (term.kind == address_term_kind::kUniformRegister ||
+                  term.kind == address_term_kind::kImmediate);
+      if (valid) {
+        // Retain common address terms for dependency projection.
+        address.text = text;
+        return address;
+      }
+    }
+    operand invalid;
+    invalid.text = text;
+    return invalid;
+  }
+  if (text.back() == ']' && text.rfind("idesc[", 0) == 0) {
+    operand reg = parse_register_like(text.substr(6, text.size() - 7));
+    if (reg.kind == operand_kind::kUniformRegister && !reg.negated &&
+        !has_unrepresented_value_modifier(reg) && !reg.wide) {
+      reg.text = text;
+      return reg;
+    }
+    operand invalid;
+    invalid.text = text;
+    return invalid;
+  }
   operand result = parse_constant(text);
   if (result.kind != operand_kind::kOpaque)
     return result;
@@ -466,7 +497,19 @@ void parse_instruction_operands(instruction &inst) {
   inst.operands.clear();
   inst.operands_structured = true;
   for (const std::string &text : split_operand_text(inst.operand_text)) {
-    inst.operands.push_back(parse_operand(text));
+    operand parsed = parse_operand(text);
+    if (parsed.kind == operand_kind::kOpaque && inst.opcode == "UTCHMMA.WS" &&
+        inst.operands.size() == 1) {
+      auto base = text;
+      tcgen05_ws_collector_control control;
+      if (decode_ws_collector_operand(base, control)) {
+        parsed = parse_operand(base);
+        if (parsed.kind != operand_kind::kGmmaDescriptor)
+          parsed = {};
+        parsed.text = text;
+      }
+    }
+    inst.operands.push_back(parsed);
     if (inst.operands.back().kind == operand_kind::kOpaque)
       inst.operands_structured = false;
   }
@@ -491,6 +534,44 @@ void parse_instruction_operands(instruction &inst) {
   }
 }
 
+namespace {
+bool normalize_direct_global_address(operand &address) {
+  if (address.has_prefix || address.address_groups.size() != 1)
+    return false;
+  unsigned bases = 0, register_bases = 0, uniform_offsets = 0;
+  for (auto &term : address.address_groups[0].terms) {
+    if (term.kind == address_term_kind::kRegister) {
+      if (term.index == kZeroRegister && !term.wide && !term.negated)
+        continue;
+      if (term.index >= kZeroRegister - 1 || term.negated)
+        return false;
+      term.wide =
+          true; // Extended global addresses use a pair even without .64.
+      ++bases;
+      ++register_bases;
+    } else if (term.kind == address_term_kind::kUniformRegister) {
+      if (term.negated || term.index > kZeroUniformRegister)
+        return false;
+      if (term.wide) {
+        if (term.index >= kZeroUniformRegister - 1)
+          return false;
+        ++bases;
+      } else {
+        // Legacy LDG lowering can add a 32-bit uniform byte offset to the
+        // lane's 64-bit base. Keep it narrow for address and dependency reads.
+        ++uniform_offsets;
+      }
+    } else if (term.kind != address_term_kind::kImmediate) {
+      return false;
+    }
+  }
+  if (bases != 1 || uniform_offsets > 1 ||
+      (uniform_offsets && register_bases != 1))
+    return false;
+  return true;
+}
+} // namespace
+
 bool normalize_ldg_operands(instruction &inst) {
   // Do not accidentally accept a new two-operand direct-address spelling
   // without applying the register-pair rules below.
@@ -509,26 +590,20 @@ bool normalize_ldg_operands(instruction &inst) {
   destination.kind = operand_kind::kRegister;
   destination.index = address.prefix_index;
   address.has_prefix = false;
-  unsigned bases = 0;
-  for (auto &term : address.address_groups[0].terms) {
-    if (term.kind == address_term_kind::kRegister) {
-      if (term.index == kZeroRegister && !term.wide && !term.negated)
-        continue;
-      if (term.index >= kZeroRegister - 1 || term.negated)
-        return false;
-      term.wide = true; // LDG.E uses a pair even when .64 is omitted.
-      ++bases;
-    } else if (term.kind == address_term_kind::kUniformRegister) {
-      if (!term.wide || term.negated || term.index >= kZeroUniformRegister - 1)
-        return false;
-      ++bases;
-    } else if (term.kind != address_term_kind::kImmediate) {
-      return false;
-    }
-  }
-  if (bases != 1)
+  if (!normalize_direct_global_address(address))
     return false;
   inst.operands = {destination, address};
+  return true;
+}
+
+bool normalize_stg_operands(instruction &inst) {
+  if (inst.operands.size() != 2 ||
+      inst.operands[0].kind != operand_kind::kMemoryAddress)
+    return true; // Descriptor operands retain their existing path.
+  operand address = inst.operands[0];
+  if (!normalize_direct_global_address(address))
+    return false;
+  inst.operands[0] = std::move(address);
   return true;
 }
 

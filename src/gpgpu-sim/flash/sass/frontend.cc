@@ -107,6 +107,55 @@ uint64_t cta_execution_state::generation(unsigned barrier_id) const {
   return barriers_[barrier_id].generation;
 }
 
+bool cta_execution_state::can_record_barrier_reduction(
+    unsigned id, uint64_t generation, unsigned warp,
+    cta_reduction_op op) const {
+  if (id >= kCtaBarrierSlots || warp >= warp_count_)
+    return false;
+  const auto &r = reductions_[id];
+  return r.generation != generation ||
+         (r.op == op && !(r.warps & (1u << warp)));
+}
+
+void cta_execution_state::record_barrier_reduction(unsigned id,
+                                                   uint64_t generation,
+                                                   unsigned warp,
+                                                   uint32_t value,
+                                                   cta_reduction_op op) {
+  if (!can_record_barrier_reduction(id, generation, warp, op))
+    panic("inconsistent or duplicate CTA reduction arrival");
+  auto &r = reductions_[id];
+  if (r.generation != generation) {
+    r = {};
+    r.generation = generation;
+    r.op = op;
+  }
+  r.accumulator.accumulate(op, value);
+  r.warps |= 1u << warp;
+  publish_barrier_reduction(id);
+}
+
+void cta_execution_state::publish_barrier_reduction(unsigned id) {
+  auto &r = reductions_[id];
+  if (!r.warps || r.published || !released(id, r.generation))
+    return;
+  // A fast warp starting the next generation must not erase a slow peer's
+  // completed result. Publication happens only once per generation.
+  for (unsigned w = 0; w < warp_count_; ++w)
+    if (r.warps & (1u << w))
+      reduction_results_[w] = {true, r.accumulator.value(), r.op};
+  r.published = true;
+}
+
+bool cta_execution_state::read_barrier_reduction(unsigned warp, uint32_t &value,
+                                                 cta_reduction_op &op) const {
+  if (warp >= warp_count_ || !reduction_results_[warp].ready)
+    return false;
+  value = reduction_results_[warp].value;
+  op = reduction_results_[warp].op;
+  return true;
+}
+
 bool cta_execution_state::arrive(unsigned barrier_id, unsigned warp_id,
                                  unsigned expected_warp_count) {
   if (barrier_id >= kCtaBarrierSlots)
@@ -164,6 +213,8 @@ void cta_execution_state::retire_warp(unsigned warp_id) {
       ++barrier.generation;
     }
   }
+  for (unsigned id = 0; id < kCtaBarrierSlots; ++id)
+    publish_barrier_reduction(id);
 }
 
 bool cta_execution_state::released(unsigned barrier_id,
@@ -185,22 +236,36 @@ bool orders_deferred_cta_barrier(const instruction &inst, architecture arch) {
   const size_t separator = inst.opcode.find('.');
   const std::string base = inst.opcode.substr(0, separator);
   // Deferred CTA synchronization orders global memory as well as shared.
-  if (base == "LDG" || base == "STG" || base == "ATOMG" || base == "REDG")
-    return arch == architecture::kSm90 || arch == architecture::kSm120;
-  if (base == "BAR")
-    return arch == architecture::kSm90 || arch == architecture::kSm120;
+  if (base == "LDG" || base == "STG" || base == "ATOMG" || base == "REDG" ||
+      base == "UREDGR")
+    return arch == architecture::kSm90 || arch == architecture::kSm120 ||
+           arch == architecture::kSm100 || arch == architecture::kSm103;
+  if (base == "BAR" || base == "B2R")
+    return arch == architecture::kSm90 || arch == architecture::kSm120 ||
+           arch == architecture::kSm100 || arch == architecture::kSm103;
+  const bool blackwell =
+      arch == architecture::kSm100 || arch == architecture::kSm103;
+  // TMEM consumers and barrier polling must observe the CTA producer epoch.
+  if (blackwell &&
+      (base == "UGETNEXTWORKID" || base == "LDTM" || base == "STTM" ||
+       base == "UMEMSETS" || base == "UTCATOMSWS" || base == "UTCCP" ||
+       base == "UTCBAR" || base == "UTCHMMA" || base == "UTCQMMA" ||
+       base == "UTCOMMA" || inst.opcode.rfind("SYNCS.PHASECHK", 0) == 0))
+    return true;
   // Publishing an mbarrier arrival/completion is a shared-state side effect.
   // In particular, FA3's no-TMA path completes Q immediately after QueryEmpty;
   // letting this cross an unfinished deferred barrier can lap the consumer's
   // parity wait. Independent phase polling below remains architecture-specific.
   if (inst.opcode.rfind("SYNCS.ARRIVE", 0) == 0)
-    return arch == architecture::kSm90 || arch == architecture::kSm120;
+    return arch == architecture::kSm90 || arch == architecture::kSm120 ||
+           arch == architecture::kSm100 || arch == architecture::kSm103;
   // A TMA store/reduction consumes shared data. FA3's epilogue follows its
   // deferred O-ready barrier directly with UTMASTG, without an intervening
   // LDS/STS. Do not snapshot the reused shared buffer before its writers
   // arrive. This does not change SM90 TMA-load issue penetration.
   if (base == "UTMASTG" || base == "UTMAREDG")
-    return arch == architecture::kSm90 || arch == architecture::kSm120;
+    return arch == architecture::kSm90 || arch == architecture::kSm120 ||
+           arch == architecture::kSm100 || arch == architecture::kSm103;
   if (arch == architecture::kSm120)
     return inst.opcode.rfind("SYNCS.PHASECHK", 0) == 0 ||
            inst.opcode.rfind("UTMA", 0) == 0;
@@ -337,6 +402,7 @@ cta_execution_state::find_tensor_map_2d(uint64_t descriptor_address) const {
 }
 
 void execution_context::clear_instruction_effects() {
+  clc_effect = {};
   for (auto &lane_accesses : memory_accesses)
     lane_accesses.clear();
   tma_effects.fill({});
@@ -399,9 +465,12 @@ void frontend::add_kernel(kernel decoded_kernel) {
   if (decoded_kernel.name.empty())
     panic("cannot add an unnamed SASS kernel");
   if ((decoded_kernel.arch != architecture::kSm90 &&
-       decoded_kernel.arch != architecture::kSm120) ||
+       decoded_kernel.arch != architecture::kSm120 &&
+       decoded_kernel.arch != architecture::kSm100 &&
+       decoded_kernel.arch != architecture::kSm103) ||
       decoded_kernel.instruction_bytes != kInstructionBytes)
-    panic("frontend currently accepts only 16-byte SM90/SM120 SASS");
+    panic("frontend requires a supported architecture and 16-byte SASS "
+          "instructions");
   std::sort(decoded_kernel.instructions.begin(),
             decoded_kernel.instructions.end(),
             [](const instruction &left, const instruction &right) {

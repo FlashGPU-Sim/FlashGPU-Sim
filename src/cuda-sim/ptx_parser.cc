@@ -624,6 +624,7 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
     case U8_TYPE:
     case E4M3_TYPE:
     case E5M2_TYPE:
+    case E2M1X2_TYPE:
       g_size = 1;
       break;
     case B16_TYPE:
@@ -631,6 +632,8 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
     case U16_TYPE:
     case F16_TYPE:
     case BF16_TYPE:
+    case E4M3X2_TYPE:
+    case UE8M0X2_TYPE:
       g_size = 2;
       break;
     case B32_TYPE:
@@ -638,6 +641,7 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
     case U32_TYPE:
     case F32_TYPE:
     case TF32_TYPE:
+    case BF16X2_TYPE:
       g_size = 4;
       break;
     case F32X2_TYPE:
@@ -659,16 +663,18 @@ void ptx_recognizer::add_scalar_type_spec(int type_spec) {
                     g_ptx_token_decode[type_spec].c_str());
   g_scalar_type.push_back(type_spec);
   if (g_scalar_type.size() > 1) {
-    parse_assert(
-        (g_opcode == -1) || (g_opcode == CVT_OP) || (g_opcode == SET_OP) ||
-            (g_opcode == SLCT_OP) || (g_opcode == TEX_OP) ||
-            (g_opcode == MMA_OP) || (g_opcode == TENSOR_MMA_OP) ||
-            (g_opcode == FMA_OP) ||
-            (g_opcode == WGMMA_MMA_ASYNC_OP) ||
-            (g_opcode == WGMMA_MMA_ASYNC_SP_OP) ||
-            (g_opcode == DP4A_OP) || (g_opcode == VMIN_OP) || (g_opcode == VMAX_OP),
-        "only cvt, set, slct, tex, mma, fma, wgmma, vmin, vmax and dp4a can have "
-        "more than one type specifier.");
+    parse_assert((g_opcode == -1) || (g_opcode == CLC_QUERY_CANCEL_OP) ||
+                     (g_opcode == CVT_OP) || (g_opcode == SET_OP) ||
+                     (g_opcode == SLCT_OP) || (g_opcode == TEX_OP) ||
+                     (g_opcode == MMA_OP) || (g_opcode == TENSOR_MMA_OP) ||
+                     (g_opcode == FMA_OP) || (g_opcode == ADD_OP) ||
+                     (g_opcode == SUB_OP) || (g_opcode == WGMMA_MMA_ASYNC_OP) ||
+                     (g_opcode == WGMMA_MMA_ASYNC_SP_OP) ||
+                     (g_opcode == DP4A_OP) || (g_opcode == VMIN_OP) ||
+                     (g_opcode == VMAX_OP),
+                 "only cvt, set, slct, tex, mma, add/sub/fma, wgmma, vmin, vmax dp4a "
+                 "and CLC query can have "
+                 "more than one type specifier.");
   }
   g_scalar_type_spec = type_spec;
 }
@@ -909,27 +915,67 @@ void ptx_recognizer::end_vector_operand() {
     const bool is_store_source =
         g_opcode == ST_OP && g_vector_operand_start == 1;
     const bool is_mov_pack = g_opcode == MOV_OP && g_vector_operand_start == 1 &&
-                             g_scalar_type_spec == B64_TYPE;
-    parse_assert(is_store_source || is_mov_pack,
+        (g_scalar_type_spec == B16_TYPE || g_scalar_type_spec == B32_TYPE ||
+         g_scalar_type_spec == B64_TYPE);
+    const bool is_tensor_coordinates = g_opcode == TMA_OP &&
+        std::find(g_options.begin(), g_options.end(), TENSOR_OPTION) != g_options.end() &&
+        (g_vector_operand_start == 1 || g_vector_operand_start == 2);
+    parse_assert(is_store_source || is_mov_pack || is_tensor_coordinates,
                  "literal vector operands are only valid as store sources "
-                 "or mov.b64 pack sources.");
+                 "or mov pack sources or tensor coordinates.");
 
-    if (is_mov_pack) {
-      parse_assert(components.size() == 2,
-                   "mov.b64 pack source requires two 32-bit components.");
+    if (is_tensor_coordinates) {
+      unsigned expected = 0;
+      for (int option : g_options) {
+        switch (option) {
+        case DIM_1D_OPTION: expected = 1; break;
+        case DIM_2D_OPTION: expected = 2; break;
+        case DIM_3D_OPTION: expected = 3; break;
+        case DIM_4D_OPTION: expected = 4; break;
+        case DIM_5D_OPTION: expected = 5; break;
+        default: break;
+        }
+      }
+      if (std::find(g_options.begin(), g_options.end(), GATHER4_OPTION) != g_options.end())
+        expected = 5;
+      parse_assert(expected != 0 && components.size() == expected,
+                   "tensor coordinate count does not match instruction rank.");
+      for (const operand_info &component : components) {
+        if (component.is_literal()) {
+          parse_assert(component.get_type() == int_t || component.get_type() == unsigned_t,
+                       "tensor coordinate literals must be integers.");
+          const auto value = component.get_literal_value();
+          parse_assert(value.u64 <= UINT32_MAX ||
+                           (value.s64 >= INT32_MIN && value.s64 < 0),
+                       "tensor coordinate literal exceeds 32 bits.");
+        } else {
+          const auto *symbol = component.get_symbol();
+          const int type = symbol->type()->get_key().scalar_type();
+          parse_assert(scalar_type_bits(type) == 32 &&
+                           (is_bit_scalar_type(type) || is_integer_scalar_type(type)),
+                       "tensor coordinate registers must be 32-bit integers.");
+        }
+      }
+    } else if (is_mov_pack) {
+      const unsigned total_bits = scalar_type_bits(g_scalar_type_spec);
+      parse_assert(components.size() == 2 || components.size() == 4,
+                   "mov pack source requires two or four components.");
+      const unsigned component_bits = total_bits / components.size();
+      parse_assert(component_bits >= 8,
+                   "mov pack components must be at least eight bits.");
       for (const operand_info &component : components) {
         if (component.is_literal()) {
           const enum operand_type type = component.get_type();
           parse_assert(type == int_t || type == unsigned_t,
-                       "mov.b64 pack literals must be integers.");
+                       "mov pack literals must be integers.");
           continue;
         }
         const symbol *symbol = component.get_symbol();
         parse_assert(symbol != NULL && symbol->type() != NULL,
-                     "mov.b64 pack register component has no type.");
+                     "mov pack register component has no type.");
         const int register_type = symbol->type()->get_key().scalar_type();
-        parse_assert(scalar_type_bits(register_type) == 32,
-                     "mov.b64 pack register components must be 32 bits.");
+        parse_assert(scalar_type_bits(register_type) == component_bits,
+                     "mov pack register width must match its component width.");
       }
     } else {
       const unsigned vector_width = vector_width_from_options(g_options);
@@ -1263,6 +1309,11 @@ void ptx_recognizer::maxnt_id(int x, int y, int z) {
 
 void ptx_recognizer::set_explicit_cluster() {
   if (g_func_info) g_func_info->set_explicit_cluster(true);
+}
+
+void ptx_recognizer::set_max_cluster_rank(unsigned rank) {
+  parse_assert(rank > 0, ".maxclusterrank requires a positive CTA count");
+  if (g_func_info) g_func_info->set_max_cluster_rank(rank);
 }
 
 void ptx_recognizer::set_req_cluster_dim(int x, int y, int z) {

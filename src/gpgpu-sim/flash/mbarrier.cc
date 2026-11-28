@@ -525,21 +525,23 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
   };
 
   // Shared operands may be local offsets, mapa.u64 generic pointers, or
-  // mapa.u32/cvta.to.shared compact owner/offset values.
+  // mapa.u32/cvta.to.shared cluster rank/offset values.
   auto decode_mbar_address = [&](uint64_t raw, unsigned *owner, addr_t *off) {
     if (flash_gpgpu_sim::decode_shared_generic(raw, owner, off))
       return true;
-    if (raw < SHARED_MEM_SIZE_MAX) {
+    *off = flash_gpgpu_sim::shared_cluster_offset(raw);
+    if (pI->membar_level() != CLUSTER_OPTION) {
       *owner = thread->get_hw_sid();
-      *off = raw;
       return true;
     }
-    auto *core = static_cast<shader_core_ctx *>(thread->get_core());
-    if (core && raw / SHARED_MEM_SIZE_MAX <= core->get_config()->num_shader()) {
-      *owner = raw / SHARED_MEM_SIZE_MAX - 1;
-      *off = raw % SHARED_MEM_SIZE_MAX;
+    flash_gpgpu_sim::tb_cluster_target_t target;
+    if (flash_gpgpu_sim::decode_ptx_shared_cluster(thread, raw, &target)) {
+      *owner = target.sm_id;
       return true;
     }
+    flash_gpgpu_sim::abort_tb_cluster_dead_rank(
+        flash_gpgpu_sim::shared_cluster_rank(raw), thread->get_hw_sid(),
+        thread->get_hw_ctaid());
     return false;
   };
 
@@ -553,8 +555,10 @@ void handle_mbarrier_inst(const ptx_instruction *pIin,
                      (pI->get_space() == shared_space);
 
     if (is_shared && addr != nullptr) {
-      // Convert relative shared memory offset to absolute generic address
-      addr_t absolute_addr = shared_to_generic(thread->get_hw_sid(), *addr);
+      if (pI->membar_level() != CLUSTER_OPTION)
+        *addr = flash_gpgpu_sim::shared_cluster_offset(*addr);
+      addr_t absolute_addr = shared_to_generic(
+          thread->get_hw_sid(), flash_gpgpu_sim::shared_cluster_offset(*addr));
       if (!isspace_shared(thread->get_hw_sid(), absolute_addr)) {
         // Remote DSM mbarrier: allowed when cluster mbarrier is enabled.
         unsigned owner = 0;
@@ -1279,7 +1283,9 @@ void barrier_set_t::try_complete_tx_if_pending(unsigned cta_id,
 
   auto released_warps = m_mbarrier_manager.try_complete_tx_if_pending(
       m_shader->get_gpu(), thread_index, mbarrier_addr, completed_tx_count);
-  release_warps(released_warps);
+  // Suspended PTX waits must recheck the phase and write their predicate.
+  // Native waits use the release fallback inside this notification helper.
+  notify_mbarrier_phase_change(released_warps);
   notify_remote_waiters(cta_id, mbarrier_addr);
 }
 
@@ -1317,7 +1323,7 @@ void barrier_set_t::remote_arrive(unsigned cta_id, uint32_t mbarrier_addr,
     return;
   auto released = m_mbarrier_manager.arrive(m_shader->get_gpu(), thread_index,
                                             mbarrier_addr, (int)arrival_count);
-  release_warps(released);
+  notify_mbarrier_phase_change(released);
   notify_remote_waiters(cta_id, mbarrier_addr);
 }
 
@@ -1814,12 +1820,13 @@ void barrier_set_t::warp_reaches_mbarrier_ptx(unsigned cta_id, unsigned warp_id,
   assert(false && "mbarrier in barrier_set_t not implemented");
 }
 
-void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
-                                          const warp_inst_t &inst,
-                                          const active_mask_t &active_mask,
-                                          const ptx_instruction *static_inst,
-                                          unsigned dynamic_warp_id) {
-  if (static_inst != nullptr) {
+void barrier_set_t::warp_reaches_mbarrier(
+    unsigned cta_id, unsigned warp_id, const warp_inst_t &inst,
+    const active_mask_t &input_active_mask, const ptx_instruction *static_inst,
+    unsigned dynamic_warp_id) {
+  active_mask_t active_mask = input_active_mask;
+  if (static_inst != nullptr &&
+      !inst.get_mbarrier_static_info().per_lane_complete_tx) {
     warp_reaches_mbarrier_ptx(cta_id, warp_id, static_inst, &inst, active_mask,
                               dynamic_warp_id);
     return;
@@ -1835,6 +1842,79 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
 
   const inst_t::mbarrier_static_info_t &static_info =
       inst.get_mbarrier_static_info();
+
+  // Shared addresses were normalized by the frontend adapter. Use the
+  // same DSM messages as PTX; never apply a remote update to the issuer CTA.
+  // Validate all destinations before sending anything. A warp-level completion
+  // cannot silently combine different peer barriers (or local and remote ones).
+  if (static_info.operation ==
+          inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX &&
+      !static_info.per_lane_complete_tx) {
+    const inst_t::mbarrier_info_t *first = nullptr;
+    for (unsigned lane = 0; lane < m_shader->get_config()->warp_size; ++lane) {
+      if (!active_mask.test(lane))
+        continue;
+      const auto &info = inst.get_mbarrier_info(lane);
+      if (!is_valid_mbarrier_info(info))
+        continue;
+      if (first == nullptr) {
+        first = &info;
+        continue;
+      }
+      if (info.bar_id != first->bar_id || info.bar_count != first->bar_count ||
+          info.bar_parity != first->bar_parity ||
+          info.is_remote != first->is_remote ||
+          (info.is_remote && (info.remote_cid != first->remote_cid ||
+                              info.remote_hw_cta != first->remote_hw_cta))) {
+        fprintf(stderr,
+                "non-uniform native mbarrier completion destinations\n");
+        abort();
+      }
+    }
+  }
+  bool uniform_remote_completion_sent = false;
+  for (unsigned lane = 0; lane < m_shader->get_config()->warp_size; ++lane) {
+    if (!active_mask.test(lane))
+      continue;
+    const auto &info = inst.get_mbarrier_info(lane);
+    if (!is_valid_mbarrier_info(info) || !info.is_remote)
+      continue;
+    if (!mbar_has_remote_path(m_shader))
+      flash_gpgpu_sim::abort_dsm_disabled("native mbarrier",
+                                          m_shader->get_sid(), info.bar_id);
+    const unsigned src =
+        m_shader->get_config()->sid_to_cid(m_shader->get_sid());
+    auto send = [&](flash_gpgpu_sim::cluster_mbar_op op, unsigned count) {
+      if (mbarrier_trace_enabled(m_shader->get_sid()))
+        fprintf(stderr,
+                "NATIVE_MBAR_SEND sm=%u dst=%u cta=%u addr=0x%x op=%u count=%u "
+                "pc=0x%llx\n",
+                m_shader->get_sid(), info.remote_cid, info.remote_hw_cta,
+                info.bar_id, unsigned(op), count, (unsigned long long)inst.pc);
+      inject_remote_mbar(m_shader, src, info.remote_cid, info.remote_hw_cta,
+                         info.bar_id, op, count);
+    };
+    if (static_info.operation ==
+        inst_t::mbarrier_static_info_t::MBARRIER_ARRIVE_EXPECT_TX) {
+      if (static_info.expect_tx)
+        send(flash_gpgpu_sim::cluster_mbar_op::EXPECT_TX, info.bar_count);
+      if (static_info.arrive)
+        send(flash_gpgpu_sim::cluster_mbar_op::ARRIVE,
+             static_info.expect_tx ? 1 : info.bar_count);
+    } else if (static_info.operation ==
+               inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX) {
+      if (static_info.per_lane_complete_tx || !uniform_remote_completion_sent)
+        send(flash_gpgpu_sim::cluster_mbar_op::COMPLETE_TX, info.bar_count);
+      uniform_remote_completion_sent = true;
+    } else {
+      fprintf(stderr, "unsupported native remote mbarrier operation %d\n",
+              static_info.operation);
+      abort();
+    }
+    active_mask.reset(lane);
+  }
+  if (active_mask.none())
+    return;
 
   unsigned warp_size = m_shader->get_config()->warp_size;
   const bool trace_mbarrier = mbarrier_trace_enabled(m_shader->get_sid());
@@ -1981,7 +2061,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
         auto released = m_mbarrier_manager.complete_tx(
             m_shader->get_gpu(), thread_index, info.bar_id, info.bar_count);
         trace_state("complete_tx", info.bar_id, info.bar_count, false);
-        release_warps(released);
+        notify_mbarrier_phase_change(released);
       }
       return;
     }
@@ -1996,7 +2076,7 @@ void barrier_set_t::warp_reaches_mbarrier(unsigned cta_id, unsigned warp_id,
     auto released_warps = m_mbarrier_manager.complete_tx(
         m_shader->get_gpu(), thread_index, addr, completed_tx_count);
     trace_state("complete_tx", addr, completed_tx_count, false);
-    release_warps(released_warps);
+    notify_mbarrier_phase_change(released_warps);
 
     return;
   } else if (static_info.operation ==

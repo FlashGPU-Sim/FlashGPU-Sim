@@ -38,7 +38,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <vector>
 #include <algorithm>
 #include <bitset>
 #include <deque>
@@ -49,6 +48,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "flash/clc.h"
+#include "flash/shared_bandwidth.h"
 
 // Complete type required for std::unique_ptr destructor of dsm_fabric_t /
 // dsm_endpoint_protocol_t.
@@ -79,6 +80,7 @@
 #include "flash/instruction_cache/instruction_cache.h"
 #include "flash/cta_barrier_timing.h"
 #include "flash/instruction_dependency_tracker.h"
+#include "flash/load_response_counter.h"
 #include "flash/mio_ldsm_timing.h"
 #include "flash/native_register_file_timing.h"
 #include "flash/shared_proxy_timing.h"
@@ -157,10 +159,12 @@ class shd_warp_t {
     m_dynamic_warp_id = (unsigned)-1;
     n_completed = m_warp_size;
     m_n_atomic = 0;
+    m_n_async_atomic = 0;
     m_membar = false;
     m_done_exit = true;
     m_last_fetch = 0;
     m_tma_issue_timing.reset();
+    m_tma_instruction_issue_hold.reset();
     m_tensormap_issue_timing.reset();
     m_shared_load_issue_timing.reset();
     m_shared_store_issue_timing.reset();
@@ -203,6 +207,7 @@ class shd_warp_t {
     m_active_threads = active;
     m_done_exit = false;
     m_tma_issue_timing.reset();
+    m_tma_instruction_issue_hold.reset();
     m_tensormap_issue_timing.reset();
     m_shared_load_issue_timing.reset();
     m_shared_store_issue_timing.reset();
@@ -258,8 +263,19 @@ class shd_warp_t {
 
   unsigned get_n_atomic() const { return m_n_atomic; }
   bool is_waiting_ldgsts() const { return m_waiting_ldgsts; }
-  void inc_n_atomic() { m_n_atomic++; }
-  void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
+  unsigned blocking_atomics() const { return m_n_atomic - m_n_async_atomic; }
+  void inc_n_atomic(bool async = false) {
+    ++m_n_atomic;
+    if (async) ++m_n_async_atomic;
+  }
+  void dec_n_atomic(unsigned n, bool async = false) {
+    assert(m_n_atomic >= n);
+    m_n_atomic -= n;
+    if (async) {
+      assert(m_n_async_atomic >= n);
+      m_n_async_atomic -= n;
+    }
+  }
 
   void set_membar() { m_membar = true; }
   void clear_membar() { m_membar = false; }
@@ -267,6 +283,9 @@ class shd_warp_t {
   virtual address_type get_pc() const { return m_next_pc; }
   virtual kernel_info_t *get_kernel_info() const;
   void set_next_pc(address_type pc) { m_next_pc = pc; }
+  flash_gpgpu_sim::tma_instruction_issue_hold_t &tma_instruction_issue_hold() {
+    return m_tma_instruction_issue_hold;
+  }
   void begin_tma_issue_delay(unsigned long long issue_cycle,
                              unsigned latency) {
     m_tma_issue_timing.begin(issue_cycle, latency);
@@ -386,7 +405,8 @@ class shd_warp_t {
 
   bool instruction_dependency_ready(const inst_t &inst,
                                     uint64_t cycle) {
-    return m_instruction_dependencies.ready(inst.get_dependency_control(),
+    return m_instruction_dependencies.register_results_ready(inst, cycle) &&
+           m_instruction_dependencies.ready(inst.get_dependency_control(),
                                             cycle, inst.op);
   }
   bool instruction_control_delay_ready(uint64_t cycle) const {
@@ -399,6 +419,8 @@ class shd_warp_t {
   }
   void instruction_dependency_issue(const warp_inst_t &inst,
                                     uint64_t cycle) {
+    m_instruction_dependencies.issue_register_results(
+        inst, inst.get_active_mask().any(), cycle);
     m_instruction_dependencies.issue(inst.get_dependency_control(),
                                      inst.get_uid(),
                                      inst.get_active_mask().any(), cycle);
@@ -459,6 +481,7 @@ class shd_warp_t {
   ibuffer_entry m_ibuffer[IBUFFER_SIZE];
   unsigned m_next;
 
+  unsigned m_n_async_atomic;
   unsigned m_n_atomic;  // number of outstanding atomic operations
   bool m_membar;        // if true, warp is waiting at memory barrier
 
@@ -468,6 +491,7 @@ class shd_warp_t {
   unsigned long long m_last_fetch;
   uint64_t m_instruction_fetch_ready_cycle;
 
+  flash_gpgpu_sim::tma_instruction_issue_hold_t m_tma_instruction_issue_hold;
   flash_gpgpu_sim::tma_issue_timing_t m_tma_issue_timing;
   flash_gpgpu_sim::tma_issue_timing_t m_tensormap_issue_timing;
   flash_gpgpu_sim::shared_load_issue_timing_t m_shared_load_issue_timing;
@@ -877,6 +901,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
  private:
   void process_banks() { m_arbiter.reset_alloction(); }
 
+  void init_collector_units(const core_config *config);
   void dispatch_ready_cu();
   void allocate_cu(unsigned port);
   void allocate_reads();
@@ -2057,6 +2082,9 @@ class ldst_unit : public pipelined_simd_unit {
   std::map<unsigned /*warp_id*/,
            std::map<unsigned /*regnum*/, unsigned /*count*/>>
       m_pending_writes;
+  // Completion tokens belong to dynamic instructions, not destination registers.
+  bool uses_cached_load_completion(const warp_inst_t &inst) const;
+  flash_gpgpu_sim::load_response_counter m_cached_load_responses;
   std::list<mem_fetch *> m_response_fifo;
   opndcoll_rfu_t *m_operand_collector;
   Scoreboard *m_scoreboard;
@@ -2238,6 +2266,11 @@ class shader_core_config : public core_config {
              "<depth,startup_gap,fast_gap,slow_gap,reset_gap>\n");
       abort();
     }
+    if (gpgpu_tcgen05_shared_operand_model && !gpgpu_tcgen05_precision_timing) {
+      fprintf(stderr,
+              "TCGen05 shared operand timing requires precision timing\n");
+      abort();
+    }
     int tcgen05_cp_latency_ntok = sscanf(
         ptx_opcode_tcgen05_cp_completion_latency, "%u,%u,%u,%u,%u",
         &tcgen05_cp_completion_latency[0], &tcgen05_cp_completion_latency[1],
@@ -2295,7 +2328,22 @@ class shader_core_config : public core_config {
           tcgen05_st_completion_latency[i] == 0 ||
           tcgen05_st_initiation_interval[i] == 0)
         abort();
+      if (gpgpu_tmem_b200_load_timing) {
+        if (tcgen05_ld_initiation_interval[i] >
+                tcgen05_ld_completion_latency[i] ||
+            tcgen05_ld_completion_latency[i] >= 512) {
+          fprintf(stderr,
+                  "Invalid TMEM pipeline timing: require 0 < II <= latency < "
+                  "512\n");
+          abort();
+        }
+        max_tensor_core_latency =
+            std::max(max_tensor_core_latency, tcgen05_ld_completion_latency[i]);
+      }
     }
+
+    if (gpgpu_tmem_b200_transfer_timing)
+      max_tensor_core_latency = std::max(max_tensor_core_latency, 270u);
 
     // CRITICAL: Validate number of SMs against MAX_STREAMING_MULTIPROCESSORS
     // This check prevents address space overflow in generic addressing mode.
@@ -2570,6 +2618,9 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_tma_request_bytes_per_cycle;
   // Minimum issue-to-next-instruction latency for an active regular TMA copy.
   // This issue-side warp occupancy is independent of data completion.
+  bool gpgpu_tma_instruction_issue_hold = false;
+  unsigned gpgpu_tma_ptx_issue_hold_latency = 0;
+  unsigned gpgpu_tma_ptx_issue_hold_interval = 0;
   unsigned int gpgpu_tma_issue_to_next_instruction_latency;
   // Minimum issue-to-issue recurrence for ordinary shared loads/stores from
   // one warp. Aggregate cross-warp service is modeled by the shared dispatcher.
@@ -2591,9 +2642,18 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_cp_async_wait_release_latency;
   bool gpgpu_cta_load_balance;
   unsigned int gpgpu_cta_replacement_latency;
+  unsigned gpgpu_cta_dispatch_width = 0;
+  unsigned gpgpu_cta_dispatch_per_gpc = 0;
+  unsigned gpgpu_cta_dispatch_interval = 0;
+  bool gpgpu_native_imad_on_sp = false;
+  bool gpgpu_native_fp32_aux_paths = false;
+  unsigned gpgpu_native_imad_wide_initiation = 0;
+  unsigned gpgpu_native_imad_wide_min_issue_interval = 0;
+  unsigned gpgpu_native_imad_wide_result_latency = 0;
   unsigned int gpgpu_tma_idealized_memory;
   bool gpgpu_tma_oob_l2_traffic;
   unsigned int gpgpu_mbarrier_arrive_latency;
+  unsigned gpgpu_clc_latency = 0;
   // Maximum modeled suspension for a no-hint mbarrier.try_wait. The optional
   // PTX suspendTimeHint overrides this bound after ns-to-core-cycle conversion.
   unsigned int gpgpu_mbarrier_trywait_latency;
@@ -2652,6 +2712,15 @@ class shader_core_config : public core_config {
   bool gpgpu_wgmma_rf_ordinary_read_priority = false;
   bool gpgpu_wgmma_rf_traffic_assume_accumulate;
   bool gpgpu_wgmma_rf_traffic_include_rs_a;
+  bool gpgpu_tcgen05_precision_timing, gpgpu_tcgen05_recurrence_b200;
+  bool gpgpu_tcgen05_shared_operand_model, gpgpu_tmem_b200_load_timing;
+  bool gpgpu_tmem_b200_transfer_timing;
+  bool gpgpu_shared_region_write_model;
+  unsigned tcgen05_mma_rates[5];
+  unsigned tcgen05_owner_recurrence[2], tcgen05_owner_startup[2];
+  unsigned tcgen05_owner_issue_interval, tcgen05_owner_queue_depth[2];
+  unsigned tcgen05_shared_bytes_per_cycle, tcgen05_shared_bank_bytes_per_cycle;
+  unsigned tcgen05_ws_tmem_a_service_cycles;
   unsigned int ptx_opcode_tcgen05_mma_issue_interval;
   unsigned int ptx_opcode_tcgen05_mma_completion_tail_latency;
   unsigned int ptx_opcode_tcgen05_mma_f16_flops_per_cycle;
@@ -2880,6 +2949,13 @@ struct shader_core_stats_pod {
   unsigned long long tcgen05_issued[flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT];
   unsigned long long tcgen05_completed[flash_gpgpu_sim::TCGEN05_TIMING_OP_COUNT];
   unsigned long long tcgen05_backend_busy_cycles;
+  unsigned long long tcgen05_recurrence_table_ops;
+  unsigned long long tcgen05_recurrence_fallback_ops;
+  unsigned long long tcgen05_shared_read_bytes;
+  unsigned long long tma_shared_write_bytes;
+  unsigned long long lsu_shared_write_denied_bytes;
+  unsigned long long tcgen05_shared_read_cycles;
+  unsigned long long tcgen05_lsu_read_denied_bytes;
   unsigned long long tcgen05_queue_full_stall_cycles;
   unsigned long long tcgen05_issue_interval_stall_cycles;
   unsigned long long tcgen05_commit_wait_cycles;
@@ -3193,6 +3269,12 @@ class shader_core_ctx : public core_t {
   void issue_block2core(class kernel_info_t &kernel);
   void release_finished_cta(unsigned cta_num, kernel_info_t *kernel);
   void release_pending_tma_ctas();
+  void enqueue_clc(unsigned warp, uint32_t response, uint32_t barrier,
+                   bool broadcast);
+  void arbitrate_clc(uint64_t now);
+  void deliver_clc(uint64_t now);
+  bool clc_pending_for_cta(unsigned cta) const;
+  virtual void complete_clc_architectural(unsigned cta, uint32_t barrier) {}
 
   void cache_flush();
   void cache_invalidate();
@@ -3276,13 +3358,14 @@ class shader_core_ctx : public core_t {
   // used by pipeline timing model components:
   // modifiers
   void mem_instruction_stats(const warp_inst_t &inst);
-  void decrement_atomic_count(unsigned wid, unsigned n);
+  void decrement_atomic_count(unsigned wid, unsigned n, bool async = false);
   void inc_store_req(unsigned warp_id) { m_warp[warp_id]->inc_store_req(); }
   void dec_inst_in_pipeline(unsigned warp_id) {
     m_warp[warp_id]->dec_inst_in_pipeline();
   }  // also used in writeback()
   void store_ack(class mem_fetch *mf);
   bool warp_waiting_at_mem_barrier(unsigned warp_id);
+  bool prior_memory_complete(unsigned warp_id) const;
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
   void warp_inst_operands_read(const warp_inst_t &inst);
@@ -3319,6 +3402,16 @@ class shader_core_ctx : public core_t {
   // Cluster TMA multicast: return shared memory of a CTA running on this SM.
   // Returns nullptr if the CTA slot is not currently occupied.
   class memory_space *get_cta_smem(unsigned hw_cta_id) const;
+  void bind_frontend_shared_memory(unsigned cta_id, memory_space *memory) {
+    assert(cta_id < MAX_CTA_PER_SHADER && memory);
+    assert(!m_cta_smem[cta_id] || m_cta_smem[cta_id] == memory);
+    m_cta_smem[cta_id] = memory;
+  }
+  void initialize_stored_mbarrier(unsigned cta, unsigned warp, unsigned address,
+                                  unsigned count, bool parity) {
+    m_barriers.initialize_native_stored_barrier(cta, warp, address, count,
+                                                parity);
+  }
 
   // Cluster membership for TMA multicast peer matching (issue-order group
   // within this simt_core_cluster; size = n_cores_per_cluster CTAs per group).
@@ -3347,7 +3440,11 @@ class shader_core_ctx : public core_t {
   void dsm_note_lane_op(flash_gpgpu_sim::dsm_lane_op_t op);
   void dsm_issue_lane_ops(warp_inst_t &inst);
   shared_memory_service_t &smem_service() { return m_smem; }
-  void smem_cycle() { m_smem.cycle(); }
+  void smem_cycle();
+  unsigned consume_tc_shared_read(unsigned half, unsigned bytes);
+  unsigned consume_region_shared_write(unsigned half, unsigned bytes);
+  uint64_t reserve_tma_shared_write(uint64_t start,
+      flash_gpgpu_sim::shared_bandwidth_t::bytes_t bytes);
 
   // Complete pending mbarrier tx on this SM's CTA if armed (cluster peer path).
   void try_complete_cluster_peer_mbarrier(unsigned hw_cta_id,
@@ -3719,7 +3816,8 @@ class shader_core_ctx : public core_t {
   }
   bool tcgen05_frontend_available(const warp_inst_t *inst,
                                   const active_mask_t &active_mask,
-                                  uint64_t cycle);
+                                  uint64_t cycle, unsigned warp_id,
+                                  unsigned partition);
   unsigned wgmma_cta_warpgroup_id(unsigned warp_id) const;
   bool wgmma_issued_this_cycle() const { return m_wgmma_issued_this_cycle; }
   void mark_scheduler_issued(unsigned sch_id);
@@ -3800,6 +3898,7 @@ class shader_core_ctx : public core_t {
   unsigned m_tpc;  // texture processor cluster id (aka, node id when using
                    // interconnect concentration)
   unsigned m_total_ctas_issued = 0;  // CTAs issued for current kernel
+  unsigned long long m_next_cta_admission_cycle = 0;
   const shader_core_config *m_config;
   const memory_config *m_memory_config;
   class simt_core_cluster *m_cluster;
@@ -3827,6 +3926,7 @@ class shader_core_ctx : public core_t {
   unsigned m_cta_status[MAX_CTA_PER_SHADER];  // CTAs status
   cta_lifecycle_state_t m_cta_lifecycle[MAX_CTA_PER_SHADER];
   std::map<unsigned, kernel_info_t *> m_pending_tma_cta_releases;
+  std::vector<flash_gpgpu_sim::clc_request> m_clc_requests;
   unsigned m_not_completed;  // number of threads to be completed (==0 when all
                              // thread on this core completed)
   std::bitset<MAX_THREAD_PER_SM> m_active_threads;
@@ -3879,6 +3979,9 @@ class shader_core_ctx : public core_t {
     unsigned pending_arrivals = 0;
     unsigned long long stores_visible = 0;
     unsigned long long arrive_ready = 0;
+    bool stores_ready(unsigned long long cycle) const {
+      return pending_stores == 0 && stores_visible <= cycle;
+    }
   };
   std::vector<shared_barrier_state> m_shared_barrier_state;
   struct named_arrival_event {
@@ -3922,6 +4025,9 @@ class shader_core_ctx : public core_t {
 
   // TMA support.
   flash_gpgpu_sim::tma_unit_t *m_tma = nullptr;
+  flash_gpgpu_sim::shared_bandwidth_t m_tc_shared_ports;
+  flash_gpgpu_sim::tc_shared_calendar_t m_tc_shared_calendar;
+  flash_gpgpu_sim::tc_shared_calendar_t m_tma_shared_write_calendar;
   shared_memory_service_t m_smem;
 
   // used for local address mapping with single kernel launch
@@ -3996,6 +4102,7 @@ class exec_shader_core_ctx : public shader_core_ctx {
   int get_logical_cta_id(unsigned warp_id) const override;
   int get_cta_warp_id(unsigned warp_id) const override;
   void complete_mbarrier_try_wait(unsigned warp_id) override;
+  void complete_clc_architectural(unsigned cta, uint32_t barrier) override;
 
  private:
   // The adapters alone bridge legacy architectural state to this SIMT core.
@@ -4018,7 +4125,7 @@ class simt_core_cluster {
   void dsm_cycle();
 
   void reinit();
-  unsigned issue_block2core();
+  unsigned issue_block2core(unsigned max_admissions = ~0u);
   void cache_flush();
   void cache_invalidate();
   bool icnt_injection_buffer_full(unsigned sm_id, unsigned size, bool write);

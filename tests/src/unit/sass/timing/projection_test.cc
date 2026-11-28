@@ -1,4 +1,5 @@
 #include "../test_support.h"
+#include "gpgpu-sim/flash/sass/decode/scaled_unpack_operand.h"
 
 namespace {
 
@@ -18,9 +19,10 @@ TEST(SassTimingProjectionTest, PredicateTransfersRespectSelectedBits) {
     EXPECT_EQ(
         std::vector<int>(r2p.arch_reg.dst, r2p.arch_reg.dst + r2p.outcount),
         predicates);
+    for (const char *opcode : {"P2R", "P2R.B1"})
     for (const char *auxiliary : {"", "PR"}) {
       const timing_instruction p2r(
-          official_instruction(0, "P2R", "R8,R12," + suffix, auxiliary));
+          official_instruction(0, opcode, "R8,R12," + suffix, auxiliary));
       std::vector<int> inputs{13};
       inputs.insert(inputs.end(), predicates.begin(), predicates.end());
       EXPECT_EQ(
@@ -67,6 +69,12 @@ TEST(SassTimingProjectionTest, SeparatesMultipleResultsFromInputs) {
       {"UIADD3", "UR8,UP0,UP1,UR12,UR16,UR20", {265, 521, 522},
        {269, 273, 277}, {}, {}},
       {"LEA", "R8,P0,R12,R16,0x2", {9, 513}, {13, 17}, {8}, {12, 16}},
+      {"LEA.HI", "R8,P0,R12,R16,R20,0x2", {9, 513}, {13, 17, 21},
+       {8}, {12, 16, 20}},
+      {"ULEA.HI", "UR8,UP0,UR12,UR16,UR20,0x2", {265, 521},
+       {269, 273, 277}, {}, {}},
+      {"LEA.HI.X", "R8,R12,R16,R20,0x2,P0", {9}, {13, 17, 21, 513},
+       {8}, {12, 16, 20}},
       {"VOTE.ANY", "R8,P0,P1", {9, 513}, {514}, {8}, {}},
       {"VOTEU.ALL", "UR8,UP0,P1", {265, 521}, {514}, {}, {}},
       {"ELECT", "P0,UR8,P1", {513, 265}, {514}, {}, {}},
@@ -1138,3 +1146,328 @@ TEST(SassTimingProjectionTest,
 }
 
 }  // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, TernaryFp32MaxUsesMaxProfileAndAllInputs) {
+  timing_profile profile;
+  profile.fp32_latency[1] = 7;
+  const timing_instruction projected(official_instruction(
+      0, "FMNMX3.FTZ", "R20,|R9|,|R8|,R20,!PT"), profile);
+  EXPECT_EQ(projected.op, SP_OP);
+  EXPECT_EQ(projected.latency, 7u);
+  EXPECT_EQ(projected.outcount, 1u);
+  EXPECT_EQ(projected.incount, 3u);
+  EXPECT_EQ(projected.get_register_file_source_count(), 3u);
+}
+
+TEST(SassTimingProjectionTest, BlackwellFp32PairTracksBothHalves) {
+  for (const char* opcode : {"FFMA2", "FFMA2.FTZ"}) {
+  timing_profile profile;
+  profile.fp32_latency[3] = 6;
+  const timing_instruction projected(official_instruction(
+      0x110, opcode, "R4,R6.F32x2.HI_LO,UR10.F32,R12.F32x2.HI_LO"), profile);
+  EXPECT_EQ(projected.op, SP_OP);
+  EXPECT_EQ(projected.latency, 6u);
+  EXPECT_EQ(projected.outcount, 2u);
+  EXPECT_EQ(projected.incount, 5u);
+  EXPECT_EQ(projected.arch_reg.dst[0], 5);
+  EXPECT_EQ(projected.arch_reg.dst[1], 6);
+  EXPECT_EQ(projected.get_register_file_source_count(), 4u);
+  EXPECT_EQ(projected.get_register_file_destination_count(), 2u);
+  }
+}
+
+TEST(SassTimingProjectionTest, NativeFp32PairsTrackReversedAndImmediateOperands) {
+  const timing_instruction imm(official_instruction(0,"FMUL2","R6,R4.F32x2.HI_LO,-1"));
+  EXPECT_EQ(imm.outcount,2u);EXPECT_EQ(imm.incount,2u);
+  const timing_instruction rev(official_instruction(16,"FADD2","R8,R4.F32x2.HI_LO,R6.F32x2.LO_HI"));
+  EXPECT_EQ(rev.outcount,2u);EXPECT_EQ(rev.incount,4u);
+  const timing_instruction abs(official_instruction(32,"FADD2","R4,R4.F32x2.HI_LO,|R4|.F32x2.HI_LO"));
+  EXPECT_EQ(abs.outcount,2u);EXPECT_EQ(abs.incount,2u);
+}
+}
+
+namespace {
+TEST(SassTimingProjectionTest, ScaledUnpackSharesFunctionalOperandDecoding) {
+  // Cover nvdisasm's trailing H selector as well as attached .reuse.Hn/.Bn.
+  for (bool fp4 : {false, true}) {
+    for (unsigned selector = 0; selector < (fp4 ? 4u : 2u); ++selector) {
+      for (bool immediate : {false, true}) {
+        const std::string scale = immediate ? "4.5736980577097704378e-41" : "R4";
+        const std::string payload = "R2.reuse." + std::string(fp4 ? "B" : "H") +
+                                    std::to_string(selector);
+        for (const std::string &suffix : fp4
+                 ? std::vector<std::string>{".H0", ".H1", ".B0", ".B1", ".B2", ".B3", ",H0", ",H1"}
+                 : std::vector<std::string>{",H0", ",H1"}) {
+          const auto inst = official_instruction(
+              0, fp4 ? "F2FP.BF16.E2M1.UNPACK_B" : "F2FP.BF16.E4M3.UNPACK_B",
+              "R8," + payload + "," + scale + suffix);
+          SCOPED_TRACE(inst.opcode + " " + payload + "," + scale + suffix);
+          kernel image;
+          image.name = "unpack";
+          image.arch = architecture::kSm120;
+          image.instruction_bytes = 16;
+          image.instructions = {inst};
+          frontend sass;
+          sass.add_kernel(std::move(image));
+          register_sm120_functional_semantics(sass);
+          warp_state state;
+          state.active_mask = 1;
+          state.write_register(0, 2, fp4 ? 0x72727272 : 0x40384038);
+          state.write_register(0, 4, 0x7f7f7f7f);
+          execution_context context;
+          ASSERT_EQ(sass.step("unpack", state, context).status, step_status::kAdvanced);
+          if (!immediate)
+            EXPECT_EQ(state.read_register(0, 8), fp4 ? 0x40c03f80u : 0x40003f80u);
+          const timing_instruction projected(inst);
+          EXPECT_EQ(std::vector<int>(projected.arch_reg.src,
+                                     projected.arch_reg.src + projected.incount),
+                    (immediate ? std::vector<int>{3} : std::vector<int>{3, 5}));
+          EXPECT_EQ(projected.get_register_file_source_count(), immediate ? 1u : 2u);
+          EXPECT_EQ(projected.get_register_file_source(0).reg, 2u);
+        }
+      }
+    }
+  }
+}
+} // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, PackedUnpackHalfwordSources) {
+  for (const char *opcode : {"F2FP.BF16.E8.UNPACK_B", "F2FP.F16.E4M3.UNPACK_B"})
+    for (const char *suffix : {"", ".H0", ".H1", ".reuse.H1"}) {
+      const timing_instruction inst(official_instruction(0, opcode, std::string("R8,R2") + suffix));
+      EXPECT_EQ(std::vector<int>(inst.arch_reg.src, inst.arch_reg.src + inst.incount),
+                (std::vector<int>{3}));
+      ASSERT_EQ(inst.get_register_file_source_count(), 1u);
+      EXPECT_EQ(inst.get_register_file_source(0).reg, 2u);
+    }
+}
+} // namespace
+
+namespace {
+TEST(SassTimingProjectionTest, UnpackDecoderRejectsInvalidSelectors) {
+  flash_gpgpu_sim::sass::scaled_unpack_operands decoded;
+  for (const char *operands : {"R8,R2.B4,R4.H0", "R8,R2,R4.H2",
+                                "R8,R2,R4", "R8,-R2,R4.H0"})
+    EXPECT_FALSE(flash_gpgpu_sim::sass::decode_scaled_unpack(
+        official_instruction(0, "F2FP.BF16.E2M1.UNPACK_B", operands), decoded));
+  for (const char *scale : {"UR4", "0x7f7f"}) {
+    const timing_instruction inst(official_instruction(
+        0, "F2FP.BF16.E4M3.UNPACK_B", std::string("R8,R2,") + scale + ",H0"));
+    const std::vector<int> expected = std::string(scale) == "UR4"
+                                        ? std::vector<int>{3,261} : std::vector<int>{3};
+    EXPECT_EQ(std::vector<int>(inst.arch_reg.src, inst.arch_reg.src + inst.incount), expected);
+  }
+}
+TEST(SassTimingProjectionTest, GatherImplicitRegisterSpans) {
+  for (const char *opcode : {"UTMALDG.2D.GATHER4", "UTMALDG.2D.GATHER4.2CTA",
+                              "UTMAPF.L2.2D.GATHER4"}) {
+    const bool prefetch = std::string(opcode).find("UTMAPF") == 0;
+    for (const char *operands : {"[UR4][UR12]", "[UR4], [UR12]"}) {
+      const timing_instruction inst(official_instruction(0, opcode, operands));
+      std::vector<int> expected;
+      for (unsigned word = 0; word < (prefetch ? 5u : 7u); ++word)
+        expected.push_back(261 + word);
+      expected.insert(expected.end(), {269, 270});
+      EXPECT_EQ(std::vector<int>(inst.arch_reg.src, inst.arch_reg.src + inst.incount), expected);
+      EXPECT_EQ(inst.outcount, 0u);
+    }
+  }
+  for (const char *operands : {"[UR4][UR12],UR16,desc[UR20]",
+                                "[UR4],[UR12],UR16,desc[UR20]"}) {
+    const timing_instruction inst(official_instruction(
+        0, "UTMALDG.2D.GATHER4.MULTICAST", operands));
+    std::vector<int> sources(inst.arch_reg.src, inst.arch_reg.src + inst.incount);
+    std::sort(sources.begin(), sources.end());
+    EXPECT_EQ(sources, (std::vector<int>{261,262,263,264,265,266,267,269,270,273,277,278}));
+  }
+}
+} // namespace
+
+namespace {
+TEST(SassTcgenTiming, PreservesWideTmemDependenciesAcrossPipelineCopies) {
+  for (unsigned width : {4u, 16u, 32u, 64u, 128u}) {
+    timing_instruction load(official_instruction(
+        0, "LDTM.x" + std::to_string(width), "R8,tmem[UR4]"));
+    timing_instruction store(official_instruction(
+        16, "STTM.x" + std::to_string(width), "tmem[UR4+0x10],R8"));
+    const warp_inst_t copied_load = load, copied_store = store;
+    EXPECT_EQ(copied_load.outcount + copied_load.extra_out.size(), width);
+    EXPECT_EQ(copied_store.incount + copied_store.extra_in.size(), width + 1);
+    ASSERT_EQ(copied_load.get_register_file_destination_count(), width);
+    ASSERT_EQ(copied_store.get_register_file_source_count(), width);
+    for (unsigned i = 0; i < width; ++i) {
+      EXPECT_EQ(copied_load.get_register_file_destination(i).reg, 8 + i);
+      EXPECT_EQ(copied_store.get_register_file_source(i).reg, 8 + i);
+    }
+    EXPECT_EQ(load.tcgen05_info.operation, inst_t::tcgen05_static_info_t::LOAD);
+    EXPECT_EQ(store.tcgen05_info.operation,
+              inst_t::tcgen05_static_info_t::STORE);
+  }
+}
+
+TEST(SassTcgenTiming, Narrow16DpStoresPreservePayloadAndTimingClass) {
+  for (const auto &shape : {".16dp64bit.x4", ".16dp128bit.x2", ".16dp128bit.x4"}) {
+    const unsigned words = std::string(shape) == ".16dp128bit.x4" ? 8 : 4;
+    timing_instruction store(official_instruction(
+        0, "STTM" + std::string(shape), "tmem[UR4],R8"));
+    EXPECT_EQ(store.tcgen05_info.operation, inst_t::tcgen05_static_info_t::STORE);
+    EXPECT_EQ(store.tcgen05_info.timing_index, words == 8 ? 3 : 2);
+    EXPECT_EQ(store.incount + store.extra_in.size(), words + 1);
+    ASSERT_EQ(store.get_register_file_source_count(), words);
+    for (unsigned i = 0; i < words; ++i)
+      EXPECT_EQ(store.get_register_file_source(i).reg, 8 + i);
+  }
+}
+
+}  // namespace
+
+TEST(SassTimingProjectionTest, TcgenMmaReadsAllDescriptorAndScaleRegisters) {
+  for (const char *op : {"UTCQMMA", "UTCOMMA"}) {
+    const auto inst = official_instruction(
+        0, op,
+        "gdesc[UR2],gdesc[UR4],tmem[UR6],tmem[URZ],idesc[UR8],tmem[UR10],UP0");
+    ASSERT_TRUE(inst.operands_structured);
+    const timing_instruction projected(inst);
+    EXPECT_EQ(projected.outcount, 0u);
+    std::vector<unsigned> sources;
+    for (unsigned i = 0; i < projected.incount; ++i)
+      sources.push_back(projected.arch_reg.src[i]);
+    for (unsigned reg : {2u, 3u, 4u, 5u, 6u, 8u, 10u, 11u})
+      EXPECT_NE(std::find(sources.begin(), sources.end(), 257u + reg),
+                sources.end())
+          << reg;
+    EXPECT_EQ(projected.tcgen05_info.operation,
+              inst_t::tcgen05_static_info_t::MMA);
+    EXPECT_EQ(projected.op, TENSOR_CORE_OP);
+  }
+}
+
+TEST(SassTimingProjectionTest, TmemCopyUsesCommonShapeTimingIndices) {
+  const char *opcodes[] = {
+      "UTCCP.T.S", "UTCCP.T.S.128dp128bit", "UTCCP.T.S.2x64dp128bit_lw02_lw13",
+      "UTCCP.T.S.2x64dp128bit_lw01_lw23", "UTCCP.T.S.4x32dp128bit"};
+  const unsigned expected[] = {0, 1, 2, 2, 3};
+  for (unsigned i = 0; i < 5; ++i) {
+    const timing_instruction projected(
+        official_instruction(0, opcodes[i], "tmem[UR0],gdesc[UR2]"));
+    EXPECT_EQ(projected.tcgen05_info.timing_index, expected[i]) << opcodes[i];
+  }
+}
+
+TEST(SassTimingProjectionTest, DenseMmaProjectsWholeOutputMaskGroup) {
+  for (unsigned words : {2u, 4u, 8u}) {
+    const timing_instruction inst(official_instruction(
+        0,
+        words == 2   ? "UTCHMMA.WS"
+        : words == 8 ? "UTCHMMA.2CTA"
+                     : "UTCHMMA",
+        "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6],UR12,!UP1"));
+    const std::vector<int> sources(inst.arch_reg.src,
+                                   inst.arch_reg.src + inst.incount);
+    for (unsigned i = 0; i < words; ++i)
+      EXPECT_NE(std::find(sources.begin(), sources.end(), 257 + 12 + i),
+                sources.end());
+    EXPECT_EQ(std::find(sources.begin(), sources.end(), 257 + 12 + words),
+              sources.end());
+  }
+}
+
+TEST(SassTimingProjectionTest, Fp8MaskAndBlockScaleHaveDifferentRegisterSpans) {
+  for (const auto &mask : {std::string("UR12"), std::string("URZ"),
+                           std::string("tmem[UR12]")}) {
+    const timing_instruction inst(official_instruction(
+        0, "UTCQMMA",
+        "gdesc[UR0],gdesc[UR2],tmem[UR4],tmem[UR5],idesc[UR6]," + mask + ",UP1"));
+    const std::vector<int> sources(inst.arch_reg.src,
+                                  inst.arch_reg.src + inst.incount);
+    const unsigned words = mask == "UR12" ? 4 : mask == "URZ" ? 0 : 2;
+    for (unsigned i = 0; i < 5; ++i)
+      EXPECT_EQ(std::find(sources.begin(), sources.end(), 257 + 12 + i) !=
+                    sources.end(), i < words) << mask << ':' << i;
+  }
+}
+
+TEST(SassTcgenTiming, TransferGeometrySurvivesPipelineCopy) {
+  using info = inst_t::tcgen05_static_info_t;
+  for (const char *base : {"LDTM", "STTM"}) {
+    for (const auto &entry : {
+             std::make_pair(".x32", info::ROWS32),
+             std::make_pair(".16dp64bit.x4", info::ROWS16_64B),
+             std::make_pair(".16dp128bit.x2", info::ROWS16_128B),
+             std::make_pair(".16dp256bit.x2", info::ROWS16_256B)}) {
+      timing_instruction inst(official_instruction(
+          0, std::string(base) + entry.first,
+          std::string(base) == "LDTM" ? "R8,tmem[UR4]" : "tmem[UR4],R8"));
+      warp_inst_t copied = inst;
+      EXPECT_EQ(copied.tcgen05_info.transfer_shape, entry.second);
+    }
+  }
+}
+
+TEST(SassTimingProjectionTest, NativeImadFmaRoutingAndWideIssueOverrides) {
+  timing_profile profile;
+  profile.integer_latency.fill(4);
+  profile.integer_initiation.fill(2);
+  profile.imad_on_sp = true;
+  profile.imad_wide_initiation = 4;
+  profile.imad_wide_min_issue_interval = 6;
+  profile.imad_wide_result_latency = 9;
+  auto source = official_instruction(0x20, "IMAD.WIDE.U32", "R2,R4,R5,RZ");
+  source.control.stall = 6;
+  timing_instruction wide(source, profile);
+  EXPECT_EQ(wide.op, SP_OP);
+  EXPECT_EQ(wide.oprnd_type, INT_OP);
+  EXPECT_EQ(wide.initiation_interval, 4u);
+  EXPECT_EQ(wide.get_dependency_control().stall_cycles, 6u);
+  EXPECT_EQ(wide.get_native_result_visibility_latency(), 9u);
+  timing_instruction regular(official_instruction(0x30, "IMAD", "R2,R3,R4,R5"), profile);
+  EXPECT_EQ(regular.op, SP_OP);
+  EXPECT_EQ(regular.initiation_interval, 2u);
+  timing_instruction alu(official_instruction(0x40, "IADD3", "R2,R3,R4,R5"), profile);
+  EXPECT_EQ(alu.op, ALU_OP);
+  timing_instruction address(official_instruction(0x50, "IMAD.WIDE.U32", "R2,R4,0x10,R6"), profile);
+  EXPECT_EQ(address.get_native_result_visibility_latency(), 0u);
+  EXPECT_EQ(address.initiation_interval, 2u);
+  profile.imad_on_sp = false;
+  profile.imad_wide_initiation = 0;
+  profile.imad_wide_min_issue_interval = 0;
+  profile.imad_wide_result_latency = 0;
+  timing_instruction legacy(source, profile);
+  EXPECT_EQ(legacy.op, ALU_OP);
+  EXPECT_EQ(legacy.get_dependency_control().stall_cycles, 6u);
+}
+
+
+TEST(SassTimingProjectionTest, QualifiedFp32AuxPathsDoNotRedirectWideConversions) {
+  timing_profile profile;
+  profile.fp32_aux_paths = true;
+  profile.integer_latency[0] = 4;
+  profile.integer_initiation[0] = 2;
+  profile.sfu_latency = 12;
+  profile.sfu_initiation = 8;
+  for (auto pair : {std::make_pair("F2FP.BF16.F32.PACK_AB", "R4,R6,R7"),
+                    std::make_pair("FSETP.GEU.AND", "P0,PT,R4,R5,PT")}) {
+    const auto source = official_instruction(0, pair.first, pair.second);
+    const timing_instruction inst(source, profile), legacy(source);
+    EXPECT_EQ(inst.op, ALU_OP);
+    EXPECT_EQ(inst.oprnd_type, FP_OP);
+    EXPECT_EQ(inst.initiation_interval, 2u);
+    EXPECT_EQ(legacy.op, SP_OP);
+  }
+  for (auto pair : {std::make_pair("I2F.U32.RP", "R0,UR7"),
+                    std::make_pair("F2I.FTZ.U32.TRUNC.NTZ", "R3,R2")}) {
+    const auto source = official_instruction(0, pair.first, pair.second);
+    const timing_instruction inst(source, profile), legacy(source);
+    EXPECT_EQ(inst.op, SFU_OP);
+    EXPECT_TRUE(inst.is_mio_client());
+    EXPECT_EQ(inst.latency, 12u);
+    EXPECT_EQ(inst.initiation_interval, 8u);
+    EXPECT_EQ(legacy.op, SP_OP);
+  }
+  const timing_instruction wide(
+      official_instruction(0, "F2I.U64.TRUNC", "R12,R12"), profile);
+  EXPECT_EQ(wide.op, SP_OP);
+  EXPECT_FALSE(wide.is_mio_client());
+}

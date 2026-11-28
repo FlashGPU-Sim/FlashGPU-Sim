@@ -1,6 +1,11 @@
 #include "timing_projection.h"
 #include "../../panic.h"
+#include "../decode/fp32x2_operand.h"
+#include "../decode/mixed_precision_operand.h"
 #include "../decode/operand_parser.h"
+#include "../decode/scaled_unpack_operand.h"
+#include "../decode/tma_load_operand.h"
+#include "../decode/tmem_instruction.h"
 #include "../decode/wgmma_instruction.h"
 
 #include <algorithm>
@@ -184,17 +189,21 @@ bool reads_register_file(const operand &value) {
 }
 
 bool has_destination(const std::string &base) {
-  return base != "ST" && base != "STG" && base != "STS" && base != "STL" &&
+  return base != "UMEMSETS" && base != "UREDGR" && base != "REDG" &&
+         base != "ST" && base != "STG" && base != "STS" && base != "STL" &&
          base != "STSM" && base != "BRA" && base != "BRX" && base != "BSSY" &&
          base != "BSYNC" && base != "BREAK" && base != "BRXU" &&
          base != "WARPSYNC" && base != "CALL" && base != "EXIT" &&
-         base != "RET" && base != "NOP" && base != "NANOSLEEP" &&
-         base != "YIELD" && base != "BAR" && base != "MEMBAR" &&
-         base != "DEPBAR" && base != "CCTL" && base != "UTMACCTL" &&
-         base != "UTMACMDFLUSH" && base != "FENCE" && base != "UTMALDG" &&
-         base != "UTMASTG" && base != "UTMAREDG" && base != "UTMAPF" &&
-         base != "UBLKCP" && base != "UBLKRED" && base != "LDGSTS" &&
-         base != "LDGDEPBAR";
+         base != "RET" && base != "NOP" && base != "PREEXIT" &&
+         base != "NANOSLEEP" && base != "UGETNEXTWORKID" && base != "YIELD" &&
+         base != "BAR" && base != "MEMBAR" && base != "DEPBAR" &&
+         base != "CCTL" && base != "UTMACCTL" && base != "UTMACMDFLUSH" &&
+         base != "FENCE" && base != "UTMALDG" && base != "UTMASTG" &&
+         base != "UTMAREDG" && base != "UTMAPF" && base != "UBLKCP" &&
+         base != "UBLKRED" && base != "UTCCP" && base != "UTCHMMA" &&
+         base != "UTCQMMA" && base != "UTCOMMA" && base != "UTCBAR" &&
+         base != "STTM" && base != "UVIRTCOUNT" && base != "LDGSTS" &&
+         base != "LDGDEPBAR" && base != "STAS";
 }
 
 // Native output lists can contain a value and carry/status predicates. Keep
@@ -204,6 +213,10 @@ size_t leading_destination_count(const instruction &source) {
   const size_t size = source.operands.size();
   if (size == 0 || !has_destination(base))
     return 0;
+  if (source.opcode == "B2R.RESULT")
+    return size;
+  if (base == "LDG" && has_modifier(source.opcode, "256"))
+    return 2;
   if (base == "SHFL" || base == "PLOP3" || base == "UPLOP3" ||
       base == "ISETP" || base == "UISETP" || base == "FSETP" ||
       base == "UFSETP")
@@ -213,6 +226,8 @@ size_t leading_destination_count(const instruction &source) {
         base == "ELECT") &&
        size == 3) ||
       ((source.opcode == "LEA" || source.opcode == "ULEA") && size == 5) ||
+      ((source.opcode == "LEA.HI" || source.opcode == "ULEA.HI") &&
+       size == 6) ||
       (base == "ATOMG" && size >= 4))
     return 2;
   if (base == "IADD3" || base == "UIADD3") {
@@ -225,13 +240,16 @@ size_t leading_destination_count(const instruction &source) {
 }
 
 unsigned memory_width(const std::string &opcode) {
+  if (has_modifier(opcode, "256"))
+    return 32;
   if (has_modifier(opcode, "128"))
     return 16;
   if (has_modifier(opcode, "64"))
     return 8;
   if (has_modifier(opcode, "16") || has_modifier(opcode, "U16"))
     return 2;
-  if (has_modifier(opcode, "8") || has_modifier(opcode, "U8"))
+  if (has_modifier(opcode, "8") || has_modifier(opcode, "U8") ||
+      has_modifier(opcode, "S8"))
     return 1;
   return 4;
 }
@@ -239,7 +257,13 @@ unsigned memory_width(const std::string &opcode) {
 // Use the same destination width for dependency metadata and physical RF
 // writes. CS2R/CS2UR are 64-bit by default; their narrow form is explicit.
 unsigned destination_width(const instruction &source) {
+  if (base_opcode(source.opcode) == "ATOMG" &&
+      has_modifier(source.opcode, "64"))
+    return 2;
   const std::string base = base_opcode(source.opcode);
+  if (base == "LDG" && has_modifier(source.opcode, "256"))
+    return 4; // Two independently located 128-bit register groups.
+
   if (base == "CS2R" || base == "CS2UR")
     return has_modifier(source.opcode, "32") ? 1 : 2;
   if (has_modifier(source.opcode, "WIDE") ||
@@ -250,6 +274,8 @@ unsigned destination_width(const instruction &source) {
   if (base == "LD" || base == "LDG" || base == "LDS" || base == "LDL" ||
       base == "LDC" || base == "LDCU" || base == "ULDC")
     return std::max(1u, memory_width(source.opcode) / 4);
+  if (!source.operands.empty() && source.operands.front().wide)
+    return 2;
   return 1;
 }
 
@@ -277,7 +303,7 @@ unsigned tensor_dimension(const std::string &opcode) {
 }
 
 unsigned integer_profile_index(const std::string &base) {
-  if (base == "SHFL" || base == "MATCH" || base == "REDUX")
+  if (base == "SHFL" || base == "MATCH" || base == "REDUX" || base == "CREDUX")
     return 5;
   if (base == "IMAD" || base == "UIMAD")
     return 3;
@@ -285,11 +311,13 @@ unsigned integer_profile_index(const std::string &base) {
 }
 
 unsigned fp32_profile_index(const std::string &base) {
-  if (base == "FMNMX")
+  if (base == "FMNMX" || base == "FMNMX3" || base == "HMNMX2" ||
+      base == "VHMNMX")
     return 1;
-  if (base == "FMUL" || base == "UFMUL")
+  if (base == "FMUL" || base == "UFMUL" || base == "FMUL2" || base == "HMUL2")
     return 2;
-  if (base == "FFMA" || base == "UFFMA" || base == "HFMA2")
+  if (base == "FFMA" || base == "UFFMA" || base == "HFMA2" || base == "FFMA2" ||
+      base == "FHFMA")
     return 3;
   return 0;
 }
@@ -324,6 +352,13 @@ std::array<unsigned, 3> hmma_source_widths(const std::string &opcode) {
 // all words of an operand retain its single logical reuse-cache slot.
 unsigned source_width(const instruction &source, size_t index) {
   const std::string base = base_opcode(source.opcode);
+  if (base == "ATOMG" && index == 3 && has_modifier(source.opcode, "64"))
+    return 2;
+  if ((base == "REDG" || base == "UREDGR") && index == 1 &&
+      has_modifier(source.opcode, "64"))
+    return 2;
+  if (base == "STAS" && index == 1)
+    return memory_width(source.opcode) / 4;
   if (base == "HMMA" && index >= 1 && index <= 3)
     return hmma_source_widths(source.opcode)[index - 1];
   if (has_modifier(source.opcode, "64") &&
@@ -340,6 +375,9 @@ unsigned source_width(const instruction &source, size_t index) {
       (has_modifier(source.opcode, "U64") ||
        has_modifier(source.opcode, "S64")))
     return 2;
+  if (base == "STG" && has_modifier(source.opcode, "256") &&
+      (index == 1 || index == 2))
+    return 4;
   if ((base == "ST" || base == "STG" || base == "STS" || base == "STL") &&
       index == 1)
     return std::max(1u, memory_width(source.opcode) / 4);
@@ -453,6 +491,20 @@ unsigned wgmma_compute_cycles(const wgmma_shape &shape,
       1, (work + work_per_cycle - 1) / work_per_cycle));
 }
 
+// The recovered throughput/chain matrix covers vector-register multiply with
+// zero addend. Immediate/uniform multiply and nonzero-addend address forms are
+// separate native probes; do not transfer their extra issue hold by opcode
+// alone.
+bool measured_register_wide_multiply(const instruction &source) {
+  return base_opcode(source.opcode) == "IMAD" &&
+         has_modifier(source.opcode, "WIDE") &&
+         has_modifier(source.opcode, "U32") && source.operands.size() == 4 &&
+         source.operands[1].kind == operand_kind::kRegister &&
+         source.operands[2].kind == operand_kind::kRegister &&
+         source.operands[3].kind == operand_kind::kRegister &&
+         source.operands[3].index == kZeroRegister;
+}
+
 void classify(const instruction &source, const timing_profile &profile,
               timing_instruction &target) {
   const std::string base = base_opcode(source.opcode);
@@ -462,7 +514,7 @@ void classify(const instruction &source, const timing_profile &profile,
       base == "UISETP" || base == "UFSETP" || base == "UFSEL" ||
       base == "ULEA" || base == "ULOP3" || base == "UPLOP3" || base == "UMOV" ||
       base == "UPRMT" || base == "USEL" || base == "USGXT" || base == "USHF" ||
-      base == "UVIMNMX";
+      base == "UVIMNMX" || base == "UFLO" || base == "UBREV";
   const bool uniform_data_movement = base == "UP2UR";
   target.op = ALU_OP;
   target.oprnd_type = INT_OP;
@@ -472,8 +524,57 @@ void classify(const instruction &source, const timing_profile &profile,
   target.latency = profile.integer_latency[integer_index];
   target.initiation_interval = profile.integer_initiation[integer_index];
 
-  if (base == "LD" || base == "LDG" || base == "LDS" || base == "LDL" ||
-      base == "LDC" || base == "LDCU" || base == "ULDC") {
+  using tcinfo = inst_t::tcgen05_static_info_t;
+  if (base == "UTCHMMA" || base == "UTCQMMA" || base == "UTCOMMA" ||
+      base == "UTCCP" || base == "UTCBAR") {
+    target.tcgen05_info.operation = base == "UTCCP"    ? tcinfo::COPY
+                                    : base == "UTCBAR" ? tcinfo::COMMIT
+                                                       : tcinfo::MMA;
+    target.tcgen05_info.cta_group = has_modifier(source.opcode, "2CTA") ? 2 : 1;
+    if (base == "UTCCP") {
+      target.tcgen05_info.timing_index =
+          has_modifier(source.opcode, "128dp128bit")                ? 1
+          : source.opcode.find("2x64dp128bit") != std::string::npos ? 2
+          : has_modifier(source.opcode, "4x32dp128bit")             ? 3
+                                                                    : 0;
+    }
+    if (base != "UTCBAR") {
+      target.op = TENSOR_CORE_OP;
+      target.sp_op = TENSOR__OP;
+      target.op_pipe = TENSOR_CORE__OP;
+    }
+    target.latency = target.initiation_interval = 1;
+  } else if (base == "LDTM" || base == "STTM") {
+    unsigned words = tmem_transfer_words(source.opcode);
+    target.tcgen05_info.ordinary_tmem_load =
+        source.opcode == "LDTM" ||
+        source.opcode == "LDTM.x" + std::to_string(words);
+    if (!words)
+      panic("unqualified native TMEM transfer");
+    if (source.opcode == base ||
+        source.opcode == base + ".x" + std::to_string(words))
+      target.tcgen05_info.transfer_shape = tcinfo::ROWS32;
+    else if (source.opcode.find(".16dp64bit") != std::string::npos)
+      target.tcgen05_info.transfer_shape = tcinfo::ROWS16_64B;
+    else if (source.opcode.find(".16dp128bit") != std::string::npos)
+      target.tcgen05_info.transfer_shape = tcinfo::ROWS16_128B;
+    else if (source.opcode.find(".16dp256bit") != std::string::npos)
+      target.tcgen05_info.transfer_shape = tcinfo::ROWS16_256B;
+    target.tcgen05_info.operation =
+        base == "LDTM" ? tcinfo::LOAD : tcinfo::STORE;
+    for (; words > 1; words >>= 1)
+      ++target.tcgen05_info.timing_index;
+    target.op = TENSOR_CORE_OP;
+    target.sp_op = TENSOR__OP;
+    target.op_pipe = TENSOR_CORE__OP;
+    target.latency = target.initiation_interval = 1;
+  } else if (source.opcode == "FENCE.VIEW.ASYNC.T") {
+    target.tcgen05_info.operation = tcinfo::WAIT_ST;
+    target.latency = target.initiation_interval = 1;
+  } else if (base == "UTCATOMSWS") {
+    target.latency = target.initiation_interval = 1;
+  } else if (base == "LD" || base == "LDG" || base == "LDS" || base == "LDL" ||
+             base == "LDC" || base == "LDCU" || base == "ULDC") {
     target.op = LOAD_OP;
     target.op_pipe = MEM__OP;
     target.memory_op = memory_load;
@@ -506,11 +607,21 @@ void classify(const instruction &source, const timing_profile &profile,
     target.initiation_interval = 1;
     if (base == "STS")
       target.set_mio_client();
+  } else if (source.opcode == "UMEMSETS.64") {
+    target.op = STORE_OP;
+    target.op_pipe = MEM__OP;
+    target.memory_op = memory_store;
+    target.data_size = 8;
+    target.space = memory_space_t(shared_space);
+    target.cache_op = CACHE_UNDEFINED;
+    target.latency = target.initiation_interval = 1;
   } else if (base == "LDSM" || base == "STSM") {
     target.op = base == "LDSM" ? TENSOR_CORE_LOAD_OP : TENSOR_CORE_STORE_OP;
     target.op_pipe = MEM__OP;
     target.memory_op = base == "LDSM" ? memory_load : memory_store;
-    target.data_size = has_modifier(source.opcode, "MT88") ? 2 : 4;
+    target.data_size = has_modifier(source.opcode, "MT168")  ? 1
+                       : has_modifier(source.opcode, "MT88") ? 2
+                                                             : 4;
     target.space = memory_space_t(shared_space);
     target.cache_op = CACHE_UNDEFINED;
     target.latency = 1;
@@ -518,11 +629,14 @@ void classify(const instruction &source, const timing_profile &profile,
     // Matrix shared-memory operations enter through the MIO frontend before
     // consuming the SM-wide shared data path.
     target.set_mio_client();
-  } else if (base == "ATOMG" || source.opcode == "ATOMS.ADD") {
+  } else if (base == "ATOMG" || base == "REDG" || base == "UREDGR" ||
+             uses_shared_atomic_timing_proxy(source)) {
     target.op = LOAD_OP;
     target.op_pipe = MEM__OP;
     target.memory_op = memory_load;
-    target.data_size = 4;
+    target.data_size = has_modifier(source.opcode, "64") ? 8 : 4;
+    target.set_release_memory(base == "UREDGR");
+    target.set_async_reduction(base == "UREDGR");
     target.space = memory_space_t(global_space);
     // Global atomics are serviced below L1. The SASS functional frontend has
     // already performed the architectural RMW, so this is a timing-only
@@ -535,6 +649,10 @@ void classify(const instruction &source, const timing_profile &profile,
     target.set_atomic(false);
     target.latency = 1;
     target.initiation_interval = 1;
+  } else if (base == "UGETNEXTWORKID") {
+    target.op = INTP_OP;
+    target.op_pipe = INTP__OP;
+    target.latency = target.initiation_interval = 1;
   } else if (base == "LDGSTS") {
     target.op = ASYNC_COPY_OP;
     target.op_pipe = CP_ASYNC__OP;
@@ -592,15 +710,24 @@ void classify(const instruction &source, const timing_profile &profile,
     info.bulk_wait_num = target.m_depbar_group_no;
     target.set_tma_static_info(info);
   } else if (base == "FADD" || base == "FMUL" || base == "FFMA" ||
-             base == "FMNMX" || base == "FSET" || base == "FSETP" ||
-             base == "UFSETP" || base == "FSEL" || base == "UFSEL" ||
-             base == "F2F" || base == "F2FP" || base == "F2I" ||
-             base == "I2F" || base == "I2FP" || base == "UF2I" ||
-             base == "UI2F" || base == "UFADD" || base == "UFMUL" ||
-             base == "UFFMA" || base == "HADD2" || base == "HFMA2") {
+             base == "FADD2" || base == "FMUL2" || base == "FFMA2" ||
+             base == "FMNMX" || base == "FMNMX3" || base == "FSET" ||
+             base == "FSETP" || base == "FCHK" || base == "UFSETP" ||
+             base == "FSEL" || base == "UFSEL" || base == "F2F" ||
+             base == "F2FP" || base == "F2I" || base == "I2F" ||
+             base == "I2FP" || base == "UF2I" || base == "UI2F" ||
+             base == "UFADD" || base == "UFMUL" || base == "UFFMA" ||
+             base == "HADD2" || base == "HFMA2" ||
+             source.opcode == "HMUL2.BF16_V2" ||
+             source.opcode == "HMNMX2.BF16_V2" ||
+             source.opcode == "VHMNMX.BF16_V2" || base == "FHFMA" ||
+             base == "FHADD") {
     target.op = SP_OP;
     target.oprnd_type = FP_OP;
-    target.sp_op = (base == "FMUL" || base == "UFMUL") ? FP_MUL_OP : FP__OP;
+    target.sp_op = (base == "FMUL" || base == "UFMUL" || base == "FMUL2" ||
+                    base == "HMUL2")
+                       ? FP_MUL_OP
+                       : FP__OP;
     target.op_pipe = SP__OP;
     const unsigned fp32_index = fp32_profile_index(base);
     target.latency = profile.fp32_latency[fp32_index];
@@ -685,6 +812,10 @@ void classify(const instruction &source, const timing_profile &profile,
     target.op = CALL_OPS;
   } else if (base == "EXIT") {
     target.op = EXIT_OPS;
+  } else if (base == "UCGABAR_ARV" || base == "UCGABAR_WAIT") {
+    target.op = BARRIER_OP;
+    target.cluster_barrier = true;
+    target.bar_type = base == "UCGABAR_ARV" ? ARRIVE : SYNC;
   } else if (base == "BAR") {
     target.op = BARRIER_OP;
     target.bar_type =
@@ -702,6 +833,14 @@ void classify(const instruction &source, const timing_profile &profile,
     target.op = MEMORY_BARRIER_OP;
     if (source.opcode == "FENCE.VIEW.ASYNC.S")
       target.set_async_proxy_fence();
+  } else if (base == "STAS") {
+    // Architectural payload is synchronous; completion uses the common DSM
+    // mbarrier transport. No calibrated payload-bandwidth claim is made.
+    target.op = MBARRIER_OP;
+    inst_t::mbarrier_static_info_t info;
+    info.operation = inst_t::mbarrier_static_info_t::MBARRIER_COMPLETE_TX;
+    info.per_lane_complete_tx = true;
+    target.set_mbarrier_static_info(info);
   } else if (base == "SYNCS") {
     target.op = MBARRIER_OP;
     inst_t::mbarrier_static_info_t info;
@@ -772,6 +911,8 @@ void classify(const instruction &source, const timing_profile &profile,
     inst_t::tma_static_info_t info;
     info.tma_type = inst_t::tma_static_info_t::TMA_TENSOR;
     info.tensor_dim = dimension;
+    info.tensor_gather4 = has_modifier(source.opcode, "GATHER4");
+    info.multicast_cluster = has_modifier(source.opcode, "MULTICAST");
     info.dst_space = base == "UTMALDG"
                          ? inst_t::tma_static_info_t::TMA_SHARED_CTA
                          : inst_t::tma_static_info_t::TMA_GLOBAL;
@@ -779,29 +920,51 @@ void classify(const instruction &source, const timing_profile &profile,
                          ? inst_t::tma_static_info_t::TMA_GLOBAL
                          : inst_t::tma_static_info_t::TMA_SHARED_CTA;
     target.set_tma_static_info(info);
-  } else if (base == "NOP" || base == "NANOSLEEP" || base == "S2R" ||
-             base == "S2UR" || base == "CS2R" || base == "CS2UR" ||
-             base == "MOV" || base == "MOVM" || base == "IMAD" ||
-             base == "IADD3" || base == "ISETP" || base == "LOP3" ||
-             base == "SHF" || base == "PRMT" || base == "SEL" ||
-             base == "PLOP3" || base == "VOTE" || base == "LEA" ||
-             base == "IABS" || base == "FLO" || base == "POPC" ||
-             base == "UIADD3" || base == "UIMAD" || base == "UISETP" ||
-             base == "UFSETP" || base == "UFSEL" || base == "ULEA" ||
-             base == "ULOP3" || base == "UPLOP3" || base == "UMOV" ||
-             base == "UPRMT" || base == "USEL" || base == "USHF" ||
-             base == "R2UR" || base == "UP2UR" || base == "R2P" ||
-             base == "P2R" || base == "LEPC" || base == "ELECT" ||
-             base == "VOTEU" || base == "VIMNMX" || base == "UVIMNMX" ||
-             base == "IADD" || base == "VIADD" || base == "VIADDMNMX" ||
-             base == "SGXT" || base == "USGXT" || base == "SHFL" ||
-             source.opcode == "MATCH.ANY" || source.opcode == "REDUX.OR" ||
+  } else if (source.opcode == "UVIRTCOUNT.DEALLOC.SMPOOL" || base == "ERRBAR" ||
+             source.opcode == "B2R.RESULT" || base == "CGAERRBAR" ||
+             base == "NOP" || base == "PREEXIT" || base == "NANOSLEEP" ||
+             base == "S2R" || base == "S2UR" || base == "CS2R" ||
+             base == "CS2UR" || base == "MOV" || base == "MOVM" ||
+             base == "IMAD" || base == "IADD3" || base == "ISETP" ||
+             base == "LOP3" || base == "SHF" || base == "PRMT" ||
+             base == "SEL" || base == "PLOP3" || base == "VOTE" ||
+             base == "LEA" || base == "IABS" || base == "FLO" ||
+             base == "POPC" || base == "BREV" || base == "UBREV" ||
+             base == "UFLO" || base == "UIADD3" || base == "UIMAD" ||
+             base == "UISETP" || base == "UFSETP" || base == "UFSEL" ||
+             base == "ULEA" || base == "ULOP3" || base == "UPLOP3" ||
+             base == "UMOV" || base == "UPRMT" || base == "USEL" ||
+             base == "USHF" || base == "R2UR" || base == "UP2UR" ||
+             base == "R2P" || base == "P2R" || base == "LEPC" ||
+             base == "ELECT" || base == "VOTEU" || base == "VIMNMX" ||
+             base == "VIMNMX3" || base == "UVIMNMX" || base == "IADD" ||
+             base == "VIADD" || base == "VIADDMNMX" || base == "SGXT" ||
+             base == "USGXT" || base == "SHFL" ||
+             source.opcode == "MATCH.ANY" || base == "REDUX" ||
+             base == "CREDUX" || source.opcode == "BPT.TRAP" ||
              base == "DEPBAR" || base == "CCTL" || base == "UTMACCTL" ||
              base == "USETMAXREG" || source.opcode == "WARPGROUP.ARRIVE" ||
              base == "YIELD") {
     // Default integer/ALU classification above is intentional.
   } else {
     panic("unsupported SASS timing projection for opcode " + source.opcode);
+  }
+
+  if (profile.fp32_aux_paths &&
+      (source.opcode == "F2FP.BF16.F32.PACK_AB" || base == "FSETP")) {
+    target.op = ALU_OP;
+    target.op_pipe = INTP__OP;
+    target.latency = profile.integer_latency[0];
+    target.initiation_interval = profile.integer_initiation[0];
+  } else if (profile.fp32_aux_paths && (base == "I2F" || base == "F2I") &&
+             (has_modifier(source.opcode, "U32") ||
+              has_modifier(source.opcode, "S32")) &&
+             !has_modifier(source.opcode, "F64")) {
+    target.op = SFU_OP;
+    target.op_pipe = SFU__OP;
+    target.latency = profile.sfu_latency;
+    target.initiation_interval = profile.sfu_initiation;
+    target.set_mio_client();
   }
 
   if ((uniform_arithmetic || uniform_data_movement) &&
@@ -812,6 +975,15 @@ void classify(const instruction &source, const timing_profile &profile,
     target.latency = profile.uniform_latency;
     target.initiation_interval = profile.uniform_initiation;
   }
+  if (base == "IMAD" && profile.imad_on_sp) {
+    target.op = SP_OP;
+    target.op_pipe = SP__OP;
+    // Operand/power classification remains integer; functional ISA is
+    // unchanged.
+  }
+  if (measured_register_wide_multiply(source) &&
+      profile.imad_wide_initiation != 0)
+    target.initiation_interval = profile.imad_wide_initiation;
 }
 
 void populate_registers(const instruction &source, timing_instruction &target) {
@@ -823,10 +995,21 @@ void populate_registers(const instruction &source, timing_instruction &target) {
   unsigned logical_register_operands = 0;
 
   if (source.operands_structured && !source.operands.empty() &&
-      (base == "LDS" || base == "LDL" || base == "LDSM" || base == "SYNCS" ||
-       base == "ATOMS") &&
-      source.operands.front().kind == operand_kind::kMemoryAddress &&
-      source.operands.front().has_prefix) {
+      base == "LDTM") {
+    const auto &dst = source.operands[0];
+    for (unsigned word = 0; word < tmem_transfer_words(source.opcode); ++word)
+      append_register(destinations, dst.kind, dst.index + word, false);
+    source_begin = 1;
+  } else if (source.operands_structured && source.operands.size() == 3 &&
+             base == "UTCATOMSWS") {
+    append_source_registers(destinations, source.operands[0]);
+    append_source_registers(destinations, source.operands[1]);
+    source_begin = 2;
+  } else if (source.operands_structured && !source.operands.empty() &&
+             (base == "LDS" || base == "LDL" || base == "LDSM" ||
+              base == "SYNCS" || base == "ATOMS") &&
+             source.operands.front().kind == operand_kind::kMemoryAddress &&
+             source.operands.front().has_prefix) {
     const operand &combined = source.operands.front();
     const unsigned width = combined_destination_width(source);
     append_register(destinations, combined.prefix_kind, combined.prefix_index,
@@ -871,6 +1054,12 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     // 1 and has no architectural destination.
     if (source.operands.size() >= 4) {
       append_source_registers(destinations, source.operands[1]);
+      const auto &output = source.operands[1];
+      if (output.kind == operand_kind::kRegister &&
+          output.index != kZeroRegister)
+        for (unsigned word = 1; word < destination_width(source); ++word)
+          append_register(destinations, output.kind, output.index + word,
+                          false);
       source_begin = 2;
     } else {
       source_begin = 1;
@@ -904,14 +1093,107 @@ void populate_registers(const instruction &source, timing_instruction &target) {
     }
   }
 
+  if ((base == "UTMALDG" || base == "UTMAPF") &&
+      has_modifier(source.opcode, "GATHER4")) {
+    const bool prefetch = base == "UTMAPF";
+    const unsigned words = prefetch ? 5 : 7;
+    tma_load_operands decoded;
+    if (!decode_tma_load_operands(source, words,
+                                  has_modifier(source.opcode, "MULTICAST"),
+                                  !prefetch, decoded))
+      panic("Invalid gather4 register spans for " + source.opcode);
+    for (unsigned word = 0; word < words; ++word)
+      append_register(sources, operand_kind::kUniformRegister,
+                      decoded.state_base + word, false);
+    append_register(sources, operand_kind::kUniformRegister, decoded.map_base,
+                    true);
+    source_begin = decoded.extra_begin;
+    logical_source_operands += 2;
+    logical_register_operands += 2;
+    if (decoded.cache_descriptor) {
+      // Tensor-map address qualifiers are also 64-bit UR pairs.
+      append_register(sources, operand_kind::kUniformRegister,
+                      decoded.cache_descriptor->descriptor_register, true);
+    }
+  }
+
   for (size_t index = source_begin; index < source.operands.size(); ++index) {
     append_instruction_source(sources, source, index);
+    if (base == "UBLKCP" || base == "UBLKRED") {
+      const auto &value = source.operands[index];
+      // A load's first pair holds shared destination + mbarrier; its second
+      // pair is the global pointer. Stores/reductions have only the first pair.
+      for (size_t group = 0; group < value.address_groups.size(); ++group) {
+        if (source.opcode != "UBLKCP.S.G" && group != 0)
+          continue;
+        for (const auto &term : value.address_groups[group].terms)
+          if (term.kind == address_term_kind::kUniformRegister &&
+              term.index != kZeroUniformRegister)
+            append_register(sources, operand_kind::kUniformRegister,
+                            term.index + 1, false);
+      }
+      if (value.kind == operand_kind::kTensorMapDescriptor &&
+          value.descriptor_register != kZeroUniformRegister)
+        append_register(sources, operand_kind::kUniformRegister,
+                        value.descriptor_register + 1, false);
+    }
+    if (base == "UREDGR") {
+      for (const auto &group : source.operands[index].address_groups)
+        for (const auto &term : group.terms)
+          if (term.kind == address_term_kind::kUniformRegister &&
+              term.index != kZeroUniformRegister)
+            append_register(sources, operand_kind::kUniformRegister,
+                            term.index + 1, false);
+    }
+    if ((base == "UTCCP" || base == "UTCHMMA" || base == "UTCQMMA" ||
+         base == "UTCOMMA") &&
+        source.operands[index].kind == operand_kind::kGmmaDescriptor &&
+        source.operands[index].descriptor_register != kZeroUniformRegister)
+      append_register(sources, operand_kind::kUniformRegister,
+                      source.operands[index].descriptor_register + 1, false);
+    // Dense MMA's optional mask is an implicit group of four words per CTA.
+    if ((base == "UTCHMMA" ||
+         (base == "UTCQMMA" &&
+          source.operands[index].kind == operand_kind::kUniformRegister)) &&
+        source.operands.size() == 7 && index == 5) {
+      const auto &mask = source.operands[index];
+      const unsigned words = source.opcode == "UTCHMMA.WS"         ? 2
+                             : has_modifier(source.opcode, "2CTA") ? 8
+                                                                   : 4;
+      if (mask.kind != operand_kind::kUniformRegister ||
+          (mask.index != kZeroUniformRegister &&
+           mask.index + words > kZeroUniformRegister))
+        panic("Invalid MMA output-lane mask register span");
+      if (mask.index != kZeroUniformRegister)
+        for (unsigned word = 1; word < words; ++word)
+          append_register(sources, operand_kind::kUniformRegister,
+                          mask.index + word, false);
+    }
+    // Block-scaled MMA encodes SFA/SFB as an implicit uniform-register pair.
+    if ((base == "UTCQMMA" || base == "UTCOMMA") && index == 5)
+      for (const auto &group : source.operands[index].address_groups)
+        for (const auto &term : group.terms)
+          if (term.kind == address_term_kind::kUniformRegister &&
+              term.index != kZeroUniformRegister)
+            append_register(sources, operand_kind::kUniformRegister,
+                            term.index + 1, false);
+    if (base == "STAS" && index == 1 &&
+        source.operands[index].index != kZeroRegister)
+      for (unsigned word = 1; word < memory_width(source.opcode) / 4; ++word)
+        append_register(sources, operand_kind::kRegister,
+                        source.operands[index].index + word, false);
+    if (base == "STTM" && index == 1 &&
+        source.operands[index].index != kZeroRegister)
+      for (unsigned word = 1; word < tmem_transfer_words(source.opcode); ++word)
+        append_register(sources, operand_kind::kRegister,
+                        source.operands[index].index + word, false);
+
     ++logical_source_operands;
     if (reads_register_file(source.operands[index]))
       ++logical_register_operands;
   }
   // P2R's predicate file is implicit in the supported three-operand form.
-  if (source.opcode == "P2R" && source.operands.size() == 3) {
+  if (base == "P2R" && source.operands.size() == 3) {
     append_predicate_mask(sources, operand_kind::kPredicate,
                           source.operands[2].immediate);
     if (source.operands[2].immediate != 0)
@@ -931,28 +1213,32 @@ void populate_registers(const instruction &source, timing_instruction &target) {
       ++logical_register_operands;
   }
   if (source.has_auxiliary_predicate &&
-      !(source.opcode == "P2R" && source.auxiliary_predicate.kind ==
-                                      operand_kind::kPredicateRegisterFile)) {
+      !(base == "P2R" && source.auxiliary_predicate.kind ==
+                             operand_kind::kPredicateRegisterFile)) {
     append_source_registers(sources, source.auxiliary_predicate);
     ++logical_source_operands;
     if (reads_register_file(source.auxiliary_predicate))
       ++logical_register_operands;
   }
 
-  if (destinations.size() > std::size(target.arch_reg.dst) ||
-      sources.size() > std::size(target.arch_reg.src))
-    panic("too many SASS timing register operands for " + source.opcode);
-
   for (size_t index = 0; index < destinations.size(); ++index) {
-    target.out[index] = destinations[index];
-    target.arch_reg.dst[index] = static_cast<int>(destinations[index]);
+    if (index < std::size(target.out))
+      target.out[index] = destinations[index];
+    else
+      target.extra_out.push_back(destinations[index]);
+    if (index < std::size(target.arch_reg.dst))
+      target.arch_reg.dst[index] = destinations[index];
   }
   for (size_t index = 0; index < sources.size(); ++index) {
-    target.in[index] = sources[index];
-    target.arch_reg.src[index] = static_cast<int>(sources[index]);
+    if (index < std::size(target.in))
+      target.in[index] = sources[index];
+    else
+      target.extra_in.push_back(sources[index]);
+    if (index < std::size(target.arch_reg.src))
+      target.arch_reg.src[index] = sources[index];
   }
-  target.outcount = destinations.size();
-  target.incount = sources.size();
+  target.outcount = std::min(destinations.size(), std::size(target.out));
+  target.incount = std::min(sources.size(), std::size(target.in));
   target.set_num_regs(logical_register_operands);
   target.set_num_operands(logical_source_operands);
 }
@@ -990,7 +1276,9 @@ void populate_register_file_sources(const instruction &source,
       continue;
 
     append_register_file_operand(target, value, regular_slot,
-                                 source_width(source, index));
+                                 base_opcode(source.opcode) == "STTM"
+                                     ? tmem_transfer_words(source.opcode)
+                                     : source_width(source, index));
     ++regular_slot;
   }
 }
@@ -1024,7 +1312,9 @@ void populate_register_file_destinations(const instruction &source,
     return;
   }
 
-  const unsigned width = base == "HMMA" ? 4 : destination_width(source);
+  const unsigned width = base == "LDTM"   ? tmem_transfer_words(source.opcode)
+                         : base == "HMMA" ? 4
+                                          : destination_width(source);
   for (size_t index = 0; index < leading_destination_count(source); ++index) {
     const operand &output = source.operands[index];
     append_register_file_destination(target, output.kind, output.index, width);
@@ -1032,6 +1322,12 @@ void populate_register_file_destinations(const instruction &source,
 }
 
 } // namespace
+
+bool uses_shared_atomic_timing_proxy(const instruction &source) {
+  return source.opcode == "ATOMS.ADD" || source.opcode == "ATOMS.OR" ||
+         source.opcode == "ATOMS.AND" || source.opcode == "ATOMS.XOR" ||
+         source.opcode == "ATOMS.EXCH" || source.opcode == "ATOMS.POPC.INC.32";
+}
 
 void project_mbarrier_effects(const execution_context &context,
                               warp_inst_t &target) {
@@ -1067,6 +1363,7 @@ void project_mbarrier_effects(const execution_context &context,
     info.bar_id = effect.address;
     info.bar_count = effect.count;
     info.bar_parity = effect.parity;
+    info.tcgen_multicast_mask = effect.multicast_mask;
     target.set_mbarrier_info(lane, info);
     representative = &effect;
   }
@@ -1171,10 +1468,77 @@ void timing_instruction::initialize(const instruction &native,
   unsigned byte_selector = 0;
   if ((base_opcode(source.opcode) == "LDG" &&
        !normalize_ldg_operands(source)) ||
+      (base_opcode(source.opcode) == "STG" &&
+       !normalize_stg_operands(source)) ||
       (source.opcode == "R2P" &&
        !normalize_r2p_operands(source, byte_selector)))
     panic("Invalid SASS operand normalization at PC " +
           std::to_string(source.pc));
+  if (source.opcode == "F2FP.BF16.E4M3.UNPACK_B" ||
+      source.opcode == "F2FP.BF16.E2M1.UNPACK_B") {
+    scaled_unpack_operands decoded;
+    if (!decode_scaled_unpack(source, decoded))
+      panic("Invalid scaled unpack operands at PC " +
+            std::to_string(source.pc));
+    source.operands = {source.operands[0], decoded.payload, decoded.scale};
+    source.operands_structured = true;
+  }
+  // Wide comparisons omit pair-width suffixes in nvdisasm operands.
+  // Both words must participate in scoreboard and register-file dependencies.
+  const auto base = base_opcode(source.opcode);
+  mixed_scalar_opcode mixed;
+  const bool mixed_scalar = decode_mixed_scalar_opcode(source.opcode, mixed);
+  if (mixed_scalar || source.opcode == "F2FP.BF16.E8.UNPACK_B" ||
+      source.opcode == "F2FP.F16.E4M3.UNPACK_B") {
+    const unsigned count = mixed_scalar ? (mixed.fused ? 4 : 3) : 2;
+    if (source.operands.size() != count)
+      panic("Invalid halfword instruction operand count");
+    for (unsigned i = 1; i <= (count == 4 ? 2u : 1u); ++i) {
+      operand value;
+      unsigned shift;
+      if (!(mixed_scalar
+                ? decode_mixed_half_source(source.operands[i], value, shift)
+                : decode_halfword_source(source.operands[i], value, shift)))
+        panic("Invalid halfword instruction source");
+      source.operands[i] = value;
+    }
+    source.operands_structured = std::all_of(
+        source.operands.begin(), source.operands.end(),
+        [](const operand &o) { return o.kind != operand_kind::kOpaque; });
+  }
+  if (source.opcode == "FFMA2" || source.opcode == "FADD2" ||
+      source.opcode == "FMUL2" || source.opcode == "FFMA2.FTZ" ||
+      source.opcode == "FADD2.FTZ" || source.opcode == "FMUL2.FTZ") {
+    const unsigned expected = base == "FFMA2" ? 4 : 3;
+    if (source.operands.size() != expected ||
+        source.operands[0].kind != operand_kind::kRegister ||
+        source.operands[0].index >= kZeroRegister - 1)
+      panic("invalid FP32x2 timing operands");
+    source.operands[0].wide = true;
+    for (unsigned i = 1; i < expected; ++i) {
+      fp32x2_source decoded;
+      if (!decode_fp32x2_source(source.operands[i].text, decoded))
+        panic("invalid FP32x2 timing source");
+      decoded.value.wide = decoded.paired;
+      source.operands[i] = decoded.value;
+    }
+    source.operands_structured = true;
+  }
+
+  if ((base == "ISETP" || base == "UISETP") &&
+      (source.opcode.find(".U64.") != std::string::npos ||
+       source.opcode.find(".S64.") != std::string::npos) &&
+      source.operands.size() >= 4) {
+    for (unsigned i : {2u, 3u}) {
+      auto &value = source.operands[i];
+      if ((value.kind == operand_kind::kRegister ||
+           value.kind == operand_kind::kUniformRegister) &&
+          canonical_register(value.kind, value.index) != 0)
+        value.wide = true;
+    }
+  }
+  if (source.opcode == "F2I.U64.TRUNC" && !source.operands.empty())
+    source.operands[0].wide = true;
   const bool resolved_symbol_call =
       source.opcode == "CALL.REL.NOINC" && source.operands.size() == 1 &&
       std::any_of(source.attributes.begin(), source.attributes.end(),
@@ -1211,6 +1575,14 @@ void timing_instruction::initialize(const instruction &native,
 
   inst_t::dependency_control_t dependency;
   dependency.stall_cycles = source.control.stall;
+  if (measured_register_wide_multiply(source)) {
+    if (profile.imad_wide_min_issue_interval > 255u)
+      panic(
+          "IMAD.WIDE issue interval exceeds dependency-control representation");
+    dependency.stall_cycles = std::max<unsigned>(
+        dependency.stall_cycles, profile.imad_wide_min_issue_interval);
+    set_native_result_visibility_latency(profile.imad_wide_result_latency);
+  }
   dependency.yield = source.control.yield_flag;
   dependency.write_barrier = source.control.write_barrier;
   dependency.read_barrier = source.control.read_barrier;

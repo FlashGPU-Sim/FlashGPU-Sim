@@ -31,6 +31,8 @@
 
 #ifndef ABSTRACT_HARDWARE_MODEL_INCLUDED
 #define ABSTRACT_HARDWARE_MODEL_INCLUDED
+#include "gpgpu-sim/flash/cta_reduction.h"
+#include "gpgpu-sim/flash/tcgen05/timing_metadata.h"
 
 // Forward declarations
 class gpgpu_sim;
@@ -100,6 +102,7 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 
 #include <stdio.h>
 #include <string.h>
+#include <memory>
 #include <set>
 
 typedef unsigned long long new_addr_type;
@@ -809,6 +812,11 @@ class mem_fetch_allocator {
 // instruction
 #define MAX_REG_OPERANDS 32
 
+struct atomic_callback_action {
+  virtual ~atomic_callback_action() = default;
+  virtual void execute() const = 0;
+};
+
 struct dram_callback_t {
   dram_callback_t() {
     function = NULL;
@@ -819,6 +827,7 @@ struct dram_callback_t {
 
   const class inst_t *instruction;
   class ptx_thread_info *thread;
+  std::shared_ptr<const atomic_callback_action> action;
 };
 
 class inst_t {
@@ -1006,6 +1015,7 @@ public:
     space_t dst_space = TMA_SPACE_INVALID;
     space_t src_space = TMA_SPACE_INVALID;
     unsigned tensor_dim = 0;
+    bool tensor_gather4 = false;
     unsigned bulk_wait_num = 0;  // For TMA_BULK_WAIT: number of recent groups to wait for
     bool bulk_wait_read_only = false;
     // PTX .multicast::cluster (cluster-level selective destination only).
@@ -1026,6 +1036,8 @@ public:
     uint16_t cta_mask = 0xFFFF;
     bool has_cta_mask = false;
     bool mapped_cluster_copy = false;
+    bool has_completion_mask = false;
+    uint32_t completion_mask = 0;
     bool is_valid() const {
       return mbar_addr != (uint32_t)-1 || size_in_bytes > 0;
     }
@@ -1083,21 +1095,29 @@ public:
     unsigned reg = 0;
   };
   void add_register_file_source(unsigned reg, unsigned slot, bool retain) {
-    assert(register_file_source_count < MAX_REG_OPERANDS);
-    register_file_sources[register_file_source_count++] =
-        register_file_source_t{reg, static_cast<uint8_t>(slot), retain};
+    const register_file_source_t value{reg, static_cast<uint8_t>(slot), retain};
+    if (register_file_source_count < MAX_REG_OPERANDS)
+      register_file_sources[register_file_source_count] = value;
+    else
+      extra_register_file_sources.push_back(value);
+    ++register_file_source_count;
   }
   unsigned get_register_file_source_count() const {
     return register_file_source_count;
   }
   const register_file_source_t &get_register_file_source(unsigned index) const {
     assert(index < register_file_source_count);
-    return register_file_sources[index];
+    return index < MAX_REG_OPERANDS
+               ? register_file_sources[index]
+               : extra_register_file_sources[index - MAX_REG_OPERANDS];
   }
   void add_register_file_destination(unsigned reg) {
-    assert(register_file_destination_count < MAX_REG_OPERANDS);
-    register_file_destinations[register_file_destination_count++] =
-        register_file_destination_t{reg};
+    const register_file_destination_t value{reg};
+    if (register_file_destination_count < MAX_REG_OPERANDS)
+      register_file_destinations[register_file_destination_count] = value;
+    else
+      extra_register_file_destinations.push_back(value);
+    ++register_file_destination_count;
   }
   unsigned get_register_file_destination_count() const {
     return register_file_destination_count;
@@ -1105,7 +1125,9 @@ public:
   const register_file_destination_t &
   get_register_file_destination(unsigned index) const {
     assert(index < register_file_destination_count);
-    return register_file_destinations[index];
+    return index < MAX_REG_OPERANDS
+               ? register_file_destinations[index]
+               : extra_register_file_destinations[index - MAX_REG_OPERANDS];
   }
   // Select a physical bank-width transaction model explicitly. The default
   // retains the public PTX subwarp/vector service model.
@@ -1115,8 +1137,18 @@ public:
   bool uses_physical_shared_transactions() const {
     return physical_shared_transactions;
   }
+  void set_async_reduction(bool value = true) { async_reduction = value; }
+  bool is_async_reduction() const { return async_reduction; }
+  void set_release_memory(bool value = true) { release_memory = value; }
+  bool is_release_memory() const { return release_memory; }
   void set_mio_client(bool value = true) { mio_client = value; }
   bool is_mio_client() const { return mio_client; }
+  void set_native_result_visibility_latency(unsigned value) {
+    native_result_visibility_latency = value;
+  }
+  unsigned get_native_result_visibility_latency() const {
+    return native_result_visibility_latency;
+  }
   void set_async_proxy_fence(bool value = true) {
     async_proxy_fence = value;
   }
@@ -1145,13 +1177,25 @@ private:
   unsigned register_file_source_count = 0;
   register_file_destination_t register_file_destinations[MAX_REG_OPERANDS];
   unsigned register_file_destination_count = 0;
+  std::vector<register_file_source_t> extra_register_file_sources;
+  std::vector<register_file_destination_t> extra_register_file_destinations;
   // Frontend-neutral marker for instructions admitted through the SM's
   // memory-input/output queue. Frontends classify ISA opcodes; the timing
   // backend models only the shared hardware resource.
   bool mio_client = false;
+  bool release_memory = false;
+  bool async_reduction = false;
   // Frontend-neutral marker for a fence that orders shared-memory writes with
   // the asynchronous proxy. Other memory barriers do not consume this path.
   bool async_proxy_fence = false;
+  unsigned native_result_visibility_latency = 0;
+ public:
+  // PTX helper expansion is distinct from backend TMA service. Native SASS
+  // contains the helper/control instructions already and leaves this NONE.
+  enum class tma_issue_form_t { NONE, IMPLICIT, EXPLICIT };
+  tma_issue_form_t tma_issue_form = tma_issue_form_t::NONE;
+  bool tma_explicit_elected_region = false;
+ private:
   tma_dyn_info_t tma_dyn_info[MAX_WARP_SIZE];
 
 public:
@@ -1165,6 +1209,7 @@ public:
     bool bar_has_time_hint = false;     // optional try_wait suspendTimeHint
     uint32_t bar_time_hint_ns = 0;      // hint value in nanoseconds
     // Remote (mapa / DSM) target; when is_remote, bar_id is offset on owner CTA.
+    uint16_t tcgen_multicast_mask = 0;  // Zero means local TCGen05 commit.
     bool is_remote = false;
     unsigned remote_cid = 0;
     unsigned remote_hw_cta = 0;
@@ -1175,6 +1220,7 @@ public:
       bar_parity = false;
       bar_has_time_hint = false;
       bar_time_hint_ns = 0;
+      tcgen_multicast_mask = 0;
       is_remote = false;
       remote_cid = 0;
       remote_hw_cta = 0;
@@ -1198,8 +1244,34 @@ private:
   mbarrier_info_t mbarrier_info[MAX_WARP_SIZE];
 
 public:
+ // ISA-neutral asynchronous operation. Native adapters populate this before
+ // issue; PTX is normalized by flash/tcgen05 alongside its option decoder.
+ struct tcgen05_static_info_t {
+   bool pipeline_tmem_transfer =
+       false;  // Dynamic issue: completes via FU writeback.
+   enum operation_t {
+     NONE,
+     MMA,
+     COPY,
+     SHIFT,
+     LOAD,
+     STORE,
+     COMMIT,
+     WAIT_LD,
+     WAIT_ST
+   };
+   operation_t operation = NONE;
+   unsigned cta_group = 1;
+   unsigned timing_index = 0;
+   bool ordinary_tmem_load = false;
+   // Geometry is normalized by either frontend; timing lives in the backend.
+   enum transfer_shape_t { UNQUALIFIED, ROWS32, ROWS16_64B, ROWS16_128B, ROWS16_256B };
+   transfer_shape_t transfer_shape = UNQUALIFIED;
+ } tcgen05_info;
+
   struct tcgen05_dyn_info_t {
     uint64_t mma_work = 0;
+    flash_gpgpu_sim::tcgen05_mma_metadata mma;
   };
   void set_tcgen05_dyn_info(int laneid, const tcgen05_dyn_info_t &info) {
     tcgen05_dyn_info[laneid] = info;
@@ -1274,7 +1346,8 @@ public:
 
 enum divergence_support_t { POST_DOMINATOR = 1, NUM_SIMD_MODEL };
 
-const unsigned MAX_ACCESSES_PER_INSN_PER_THREAD = 8;
+// stmatrix.m16n8.x4.b8 writes sixteen noncontiguous bytes per lane.
+const unsigned MAX_ACCESSES_PER_INSN_PER_THREAD = 16;
 
 class warp_inst_t : public inst_t {
  public:
@@ -1302,6 +1375,7 @@ class warp_inst_t : public inst_t {
     m_dsm_remote = false;
     m_smem_exposed = false;
     m_smem_got = 0;
+    m_smem_region_got[0] = m_smem_region_got[1] = 0;
     m_current_lane = 0;
     m_dsm_atomic_lanes.reset();
   }
@@ -1336,6 +1410,7 @@ class warp_inst_t : public inst_t {
     m_dsm_remote = false;
     m_smem_exposed = false;
     m_smem_got = 0;
+    m_smem_region_got[0] = m_smem_region_got[1] = 0;
     m_current_lane = 0;
     m_dsm_atomic_lanes.reset();
   }
@@ -1453,7 +1528,8 @@ class warp_inst_t : public inst_t {
                     void (*function)(const class inst_t *,
                                      class ptx_thread_info *),
                     const inst_t *inst, class ptx_thread_info *thread,
-                    bool atomic) {
+                    bool atomic,
+                    std::shared_ptr<const atomic_callback_action> action = {}) {
     if (!m_per_scalar_thread_valid) {
       m_per_scalar_thread.resize(m_config->warp_size);
       m_per_scalar_thread_valid = true;
@@ -1462,6 +1538,7 @@ class warp_inst_t : public inst_t {
     m_per_scalar_thread[lane_id].callback.function = function;
     m_per_scalar_thread[lane_id].callback.instruction = inst;
     m_per_scalar_thread[lane_id].callback.thread = thread;
+    m_per_scalar_thread[lane_id].callback.action = std::move(action);
   }
   void set_active(const active_mask_t &active);
 
@@ -1610,6 +1687,7 @@ class warp_inst_t : public inst_t {
   bool m_dsm_remote;
   bool m_smem_exposed;
   unsigned m_smem_got;
+  unsigned m_smem_region_got[2];
   bool is_dsm_remote() const { return m_dsm_remote; }
   void set_dsm_remote(bool remote) { m_dsm_remote = remote; }
 };
@@ -1663,8 +1741,7 @@ class core_t {
 
     for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) {
       for (unsigned j = 0; j < MAX_BARRIERS_PER_CTA; j++) {
-        reduction_storage[i][j] = 0;
-        reduction_active[i][j] = false;
+        reduction_storage[i][j].reset();
       }
     }
   }
@@ -1685,33 +1762,38 @@ class core_t {
   kernel_info_t *get_kernel_info() { return m_kernel; }
   class ptx_thread_info **get_thread_info() { return m_thread; }
   unsigned get_warp_size() const { return m_warp_size; }
+  // PTX lanes execute serially on the host. SHFL must read the pre-instruction
+  // source image even when destination and source alias. Scratch is per core,
+  // reset for each warp instruction, and never shared between host workers.
+  bool shuffle_sources_valid() const { return m_shuffle_sources_valid; }
+  uint32_t *shuffle_sources() { return m_shuffle_sources; }
+  void mark_shuffle_sources_valid() { m_shuffle_sources_valid = true; }
   void and_reduction(unsigned ctaid, unsigned barid, bool value) {
     begin_reduction(ctaid, barid, 1);
-    reduction_storage[ctaid][barid] &= value;
+    reduction_storage[ctaid][barid].accumulate(
+        flash_gpgpu_sim::cta_reduction_op::bit_and, value);
   }
   void or_reduction(unsigned ctaid, unsigned barid, bool value) {
     begin_reduction(ctaid, barid, 0);
-    reduction_storage[ctaid][barid] |= value;
+    reduction_storage[ctaid][barid].accumulate(
+        flash_gpgpu_sim::cta_reduction_op::bit_or, value);
   }
   void popc_reduction(unsigned ctaid, unsigned barid, bool value) {
     begin_reduction(ctaid, barid, 0);
-    reduction_storage[ctaid][barid] += value;
+    reduction_storage[ctaid][barid].accumulate(
+        flash_gpgpu_sim::cta_reduction_op::popcount, value);
   }
   void begin_reduction(unsigned ctaid, unsigned barid, unsigned identity) {
     assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
-    if (!reduction_active[ctaid][barid]) {
-      reduction_storage[ctaid][barid] = identity;
-      reduction_active[ctaid][barid] = true;
-    }
+    reduction_storage[ctaid][barid].begin(identity);
   }
   void reset_reduction(unsigned ctaid, unsigned barid) {
     assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
-    reduction_active[ctaid][barid] = false;
+    reduction_storage[ctaid][barid].reset();
   }
   unsigned get_reduction_value(unsigned ctaid, unsigned barid) {
     assert(ctaid < MAX_CTA_PER_SHADER && barid < MAX_BARRIERS_PER_CTA);
-    assert(reduction_active[ctaid][barid]);
-    return reduction_storage[ctaid][barid];
+    return reduction_storage[ctaid][barid].value();
   }
 
  protected:
@@ -1721,8 +1803,10 @@ class core_t {
   class ptx_thread_info **m_thread;
   unsigned m_warp_size;
   unsigned m_warp_count;
-  unsigned reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
-  bool reduction_active[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
+  uint32_t m_shuffle_sources[MAX_WARP_SIZE]{};
+  bool m_shuffle_sources_valid = false;
+  flash_gpgpu_sim::cta_reduction_accumulator
+      reduction_storage[MAX_CTA_PER_SHADER][MAX_BARRIERS_PER_CTA];
 };
 
 // register that can hold multiple instructions.

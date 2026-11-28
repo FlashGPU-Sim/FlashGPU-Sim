@@ -2,6 +2,7 @@
 #define FLASH_GPGPU_SIM_TMA_OPAQUE_TENSORMAP_H
 
 #include "tensormap.h"
+#include "tma_driver_tensormap.h"
 
 #include <cstdint>
 #include <cstring>
@@ -20,6 +21,10 @@ inline bool decode_sm100_opaque_tensormap(const tensormap_descriptor_t &encoded,
                                           tensormap_descriptor_t &decoded) {
   if (encoded.is_valid())
     return false;
+
+  for (unsigned rank = 2; rank <= 5; ++rank)
+    if (decode_sm100_driver_tensormap(encoded, rank, decoded))
+      return true;
 
   // Current CuTeDSL AOT export packs CUDA's opaque CUtensorMap by value in
   // kernel parameter memory instead of calling cuTensorMapEncodeTiled().  CUDA

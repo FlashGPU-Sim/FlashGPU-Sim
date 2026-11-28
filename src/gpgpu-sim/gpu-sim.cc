@@ -30,6 +30,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+#include "flash/cta_dispatch_budget.h"
 #include "gpu-sim.h"
 
 #include <algorithm>
@@ -408,8 +409,28 @@ void memory_config::reg_options(class OptionParser *opp) {
       "Coalesce identical outstanding TMA read sectors at each L2 "
       "subpartition while retaining one response per requester (default=0)",
       "0");
+  option_parser_register(
+      opp, "-gpgpu_l2_mshr_release_requests_per_cycle", OPT_UINT32,
+      &l2_mshr_release_requests_per_cycle,
+      "Maximum ready MSHR waiter requests released per subpartition per L2 "
+      "cycle; output queue and downstream bandwidth limits still apply", "1");
   option_parser_register(opp, "-dram_latency", OPT_UINT32, &dram_latency,
                          "DRAM latency (default 30)", "30");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_local_read_latency", OPT_UINT32,
+      &simple_dram_local_read_latency,
+      "Local read core cycles when remote read model is enabled; 0 uses dram_latency",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_remote_read_latency", OPT_UINT32,
+      &simple_dram_remote_read_latency,
+      "Experimental simple-DRAM remote read extra core cycles; 0 disables. "
+      "Synthetic two-domain mapping: SM id parity versus address stripe parity. "
+      "Only shader-originated non-write requests reaching DRAM are affected.", "0");
+  option_parser_register(
+      opp, "-gpgpu_simple_dram_locality_stripe_bytes", OPT_UINT32,
+      &simple_dram_locality_stripe_bytes,
+      "Synthetic HBM home stripe bytes (minimum 128, power of two)", "128");
   option_parser_register(opp, "-dram_dual_bus_interface", OPT_UINT32,
                          &dual_bus_interface,
                          "dual_bus_interface (default = 0) ", "0");
@@ -1028,6 +1049,32 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "async-proxy visibility path. 0 disables admission serialization.",
       "0");
   option_parser_register(
+      opp, "-gpgpu_native_fp32_aux_paths", OPT_BOOL,
+      &gpgpu_native_fp32_aux_paths,
+      "Route qualified native FP32 pack/compare to ALU and 32-bit integer "
+      "conversions to XU (shared SFU timing); default preserves legacy routing.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_native_imad_on_sp", OPT_BOOL,
+      &gpgpu_native_imad_on_sp,
+      "Route native vector IMAD through the SP/FMA pipeline; keep integer operands.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_native_imad_wide_initiation", OPT_UINT32,
+      &gpgpu_native_imad_wide_initiation,
+      "Native register-multiply zero-addend IMAD.WIDE initiation; 0 inherits MAD.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_native_imad_wide_min_issue_interval", OPT_UINT32,
+      &gpgpu_native_imad_wide_min_issue_interval,
+      "Minimum warp issue interval for native register-multiply zero-addend IMAD.WIDE.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_native_imad_wide_result_latency", OPT_UINT32,
+      &gpgpu_native_imad_wide_result_latency,
+      "Issue-to-dependent-register visibility for native register-multiply zero-addend IMAD.WIDE.",
+      "0");
+  option_parser_register(
       opp, "-gpgpu_sfu_to_sp_forwarding_latency", OPT_UINT32,
       &gpgpu_sfu_to_sp_forwarding_latency,
       "Cycles from SFU service start until an explicit write barrier is "
@@ -1065,6 +1112,27 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       &gpgpu_tensor_core_skip_writeback,
       "Complete tensor-core instructions without using the register-file "
       "writeback path.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_instruction_issue_hold", OPT_BOOL,
+      &gpgpu_tma_instruction_issue_hold,
+      "Model the Blackwell ordinary-TMA PTX-to-SASS issue expansion by "
+      "holding its warp until the configured TMA initiation interval (for "
+      "another TMA) or latency (for another instruction). CTA-group::2 "
+      "tensor copies use their independent backend timing and are excluded. "
+      "Default=0",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_ptx_issue_hold_latency", OPT_UINT32,
+      &gpgpu_tma_ptx_issue_hold_latency,
+      "Implicit PTX TMA per-warp hold before a non-TMA instruction. "
+      "Separate from SM-wide TMA service latency; 0 inherits opcode latency.",
+      "0");
+  option_parser_register(
+      opp, "-gpgpu_tma_ptx_issue_hold_interval", OPT_UINT32,
+      &gpgpu_tma_ptx_issue_hold_interval,
+      "Implicit PTX TMA per-warp hold before another TMA instruction. "
+      "Separate from SM-wide TMA service interval; 0 inherits opcode interval.",
       "0");
   option_parser_register(opp, "-gpgpu_num_tma_units", OPT_UINT32,
                          &gpgpu_num_tma_units,
@@ -1204,6 +1272,15 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_cta_load_balance", OPT_BOOL,
                          &gpgpu_cta_load_balance,
                          "Cap CTAs per core to ceil(total_ctas/n_cores) for load balancing (default=0)", "0");
+  option_parser_register(opp, "-gpgpu_cta_dispatch_width", OPT_UINT32,
+      &gpgpu_cta_dispatch_width,
+      "Device-wide CTA admissions per core cycle; 0 is unrestricted", "0");
+  option_parser_register(opp, "-gpgpu_cta_dispatch_per_gpc", OPT_UINT32,
+      &gpgpu_cta_dispatch_per_gpc,
+      "Per-GPC CTA admissions per core cycle, shared by ordinary and clustered launches; 0 is unrestricted", "0");
+  option_parser_register(opp, "-gpgpu_cta_dispatch_interval", OPT_UINT32,
+      &gpgpu_cta_dispatch_interval,
+      "Minimum core cycles between CTA admissions on one SM; 0 disables", "0");
   option_parser_register(
       opp, "-gpgpu_cta_replacement_latency", OPT_UINT32,
       &gpgpu_cta_replacement_latency,
@@ -1216,6 +1293,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_tma_oob_l2_traffic", OPT_BOOL,
                          &gpgpu_tma_oob_l2_traffic,
                          "Send OOB fill requests through L2 (default=1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_clc_latency", OPT_UINT32, &gpgpu_clc_latency,
+      "CLC response latency after serial arbitration (uncalibrated)", "0");
   option_parser_register(opp, "-gpgpu_mbarrier_arrive_latency", OPT_UINT32,
                          &gpgpu_mbarrier_arrive_latency,
                          "Latency (cycles) for arrive_tx shared memory write before mbarrier update (default=0)", "0");
@@ -1451,6 +1531,86 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "Include register-A operand reads in WGMMA RF traffic tokens for RS "
       "WGMMA (default=0)",
       "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_precision_timing", OPT_BOOL,
+                         &gpgpu_tcgen05_precision_timing,
+                         "Enable typed MMA service and paired-SM reservations",
+                         "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_recurrence_b200", OPT_BOOL,
+                         &gpgpu_tcgen05_recurrence_b200,
+                         "Exact measured B200 owner recurrence; unknown forms "
+                         "use explicit fallback",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_shared_operand_model", OPT_BOOL,
+      &gpgpu_tcgen05_shared_operand_model,
+      "Reserve TC read ports per 128KiB region; ordinary shared loads contend",
+      "0");
+  option_parser_register(opp, "-gpgpu_tmem_b200_load_timing", OPT_BOOL,
+                         &gpgpu_tmem_b200_load_timing,
+                         "Apply LD tables only to ordinary 32dp TMEM reads "
+                         "with SMSP-local service",
+                         "0");
+  option_parser_register(opp, "-gpgpu_shared_region_write_model", OPT_BOOL,
+                         &gpgpu_shared_region_write_model,
+                         "Share per-128KiB write ports between aligned local "
+                         "TMA landing and STS; retain independent read ports", "0");
+  option_parser_register(opp, "-gpgpu_tmem_b200_transfer_timing", OPT_BOOL,
+                         &gpgpu_tmem_b200_transfer_timing,
+                         "B200 ordinary stores and qualified 16dp transfers: "
+                         "SMSP-local pipeline service and retirement", "0");
+  option_parser_register(opp, "-ptx_opcode_tcgen05_mma_half_flops_per_cycle",
+                         OPT_UINT32, &tcgen05_mma_rates[0],
+                         "Half MMA rate, zero inherits legacy FP16", "0");
+  option_parser_register(opp, "-ptx_opcode_tcgen05_mma_tf32_flops_per_cycle",
+                         OPT_UINT32, &tcgen05_mma_rates[1],
+                         "TF32 MMA rate, zero inherits legacy FP16", "0");
+  option_parser_register(opp, "-ptx_opcode_tcgen05_mma_fp8_flops_per_cycle",
+                         OPT_UINT32, &tcgen05_mma_rates[2],
+                         "Dense FP8 MMA rate, zero inherits legacy FP16", "0");
+  option_parser_register(
+      opp, "-ptx_opcode_tcgen05_mma_mixed_flops_per_cycle", OPT_UINT32,
+      &tcgen05_mma_rates[3],
+      "Mixed block-scaled MMA rate, zero inherits legacy FP16", "0");
+  option_parser_register(opp, "-ptx_opcode_tcgen05_mma_fp4_flops_per_cycle",
+                         OPT_UINT32, &tcgen05_mma_rates[4],
+                         "Compact FP4 MMA rate, zero inherits legacy FP16",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_owner_recurrence", OPT_UINT32,
+      &tcgen05_owner_recurrence[0],
+      "Unmeasured single-CTA owner recurrence fallback, zero disables", "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_owner_recurrence_cta2", OPT_UINT32,
+      &tcgen05_owner_recurrence[1],
+      "Unmeasured paired-CTA owner recurrence fallback, zero disables", "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_owner_startup", OPT_UINT32,
+                         &tcgen05_owner_startup[0],
+                         "Single-CTA first owner completion startup", "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_owner_startup_cta2", OPT_UINT32,
+                         &tcgen05_owner_startup[1],
+                         "Paired-CTA first owner completion startup", "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_owner_issue_interval", OPT_UINT32,
+                         &tcgen05_owner_issue_interval,
+                         "Per-owner MMA admission interval", "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_owner_queue_depth", OPT_UINT32,
+      &tcgen05_owner_queue_depth[0],
+      "Single-CTA per-owner outstanding MMA limit, zero unlimited", "0");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_owner_queue_depth_cta2", OPT_UINT32,
+      &tcgen05_owner_queue_depth[1],
+      "Paired-CTA per-owner outstanding MMA limit, zero unlimited", "0");
+  option_parser_register(opp, "-gpgpu_tcgen05_shared_bytes_per_cycle",
+                         OPT_UINT32, &tcgen05_shared_bytes_per_cycle,
+                         "TC shared read path bytes per cycle", "128");
+  option_parser_register(opp, "-gpgpu_tcgen05_shared_bank_bytes_per_cycle",
+                         OPT_UINT32, &tcgen05_shared_bank_bytes_per_cycle,
+                         "Shared read bytes per cycle per 128KiB region",
+                         "128");
+  option_parser_register(
+      opp, "-gpgpu_tcgen05_ws_tmem_a_service_cycles", OPT_UINT32,
+      &tcgen05_ws_tmem_a_service_cycles,
+      "WS TMEM-A effective feed charge; not a general TMEM rate", "0");
   option_parser_register(
       opp, "-ptx_opcode_tcgen05_mma_issue_interval", OPT_UINT32,
       &ptx_opcode_tcgen05_mma_issue_interval,
@@ -2676,6 +2836,9 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
 
   // performance counter for stalls due to congestion.
   printf("gpu_stall_dramfull = %d\n", gpu_stall_dramfull);
+  for (unsigned i = 0; i < m_memory_config->m_n_mem; ++i) {
+    m_memory_partition_unit[i]->print_locality_stat(stdout);
+  }
   unsigned long long mem_sub_part_full_stats
       [NUM_MEM_SUB_PARTITION_FULL_STATS] = {};
   for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
@@ -3054,6 +3217,8 @@ bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {
     }
   }
   if (!has_ready_cta_context) return false;
+  if (m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle <
+      m_next_cta_admission_cycle) return false;
 
   // Jin: concurrent kernels on one SM
   if (m_config->gpgpu_concurrent_kernel_sm) {
@@ -3177,6 +3342,8 @@ void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
 
   kernel.inc_running();
   m_total_ctas_issued++;
+  m_next_cta_admission_cycle = m_gpu->gpu_tot_sim_cycle +
+      m_gpu->gpu_sim_cycle + m_config->gpgpu_cta_dispatch_interval;
 
   // find a free CTA context
   unsigned free_cta_hw_id = (unsigned)-1;
@@ -3383,6 +3550,10 @@ int gpgpu_sim::next_clock_domain(void) {
 }
 
 void gpgpu_sim::issue_block2core() {
+  flash_gpgpu_sim::cta_dispatch_budget dispatch(
+      m_shader_config->gpgpu_cta_dispatch_width,
+      m_shader_config->gpgpu_cta_dispatch_per_gpc,
+      m_shader_config->n_simt_clusters);
   // 1) Co-resident issue for Thread Block Cluster launches.
   // Prefer completing an open TB cluster, else start a new one on a physical
   // cluster that can fit the whole TB cluster (never split across physical
@@ -3398,12 +3569,13 @@ void gpgpu_sim::issue_block2core() {
       unsigned group = ckernel->open_tb_cluster_group();
       if (phys < m_shader_config->n_simt_clusters) {
         unsigned issued = 0;
-        while (ckernel->has_open_tb_cluster()) {
+        while (ckernel->has_open_tb_cluster() && dispatch.available(phys)) {
           unsigned num =
               m_cluster[phys]->issue_block2core_for_kernel(ckernel, group);
           if (!num) break;
           issued += num;
           ckernel->consume_open_tb_cta();
+          dispatch.consume(phys, num);
         }
         if (issued) {
           m_last_cluster_issue = phys;
@@ -3423,11 +3595,12 @@ void gpgpu_sim::issue_block2core() {
         unsigned group =
             m_cluster[idx]->allocate_cta_cluster_group(ctas_per, (unsigned)-1);
         unsigned issued = 0;
-        while (issued < ctas_per) {
+        while (issued < ctas_per && dispatch.available(idx)) {
           unsigned num =
               m_cluster[idx]->issue_block2core_for_kernel(ckernel, group);
           if (!num) break;
           issued += num;
+          dispatch.consume(idx, num);
         }
         if (!issued) {
           // Slot count can disagree with can_issue (pending TMA, kernel bind).
@@ -3448,7 +3621,10 @@ void gpgpu_sim::issue_block2core() {
   unsigned last_issued = m_last_cluster_issue;
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
     unsigned idx = (i + last_issued + 1) % m_shader_config->n_simt_clusters;
-    unsigned num = m_cluster[idx]->issue_block2core();
+    const unsigned available = dispatch.available(idx);
+    if (!available) continue;
+    unsigned num = m_cluster[idx]->issue_block2core(available);
+    dispatch.consume(idx, num);
     if (num) {
       m_last_cluster_issue = idx;
       m_total_cta_launched += num;
@@ -3823,6 +3999,13 @@ void gpgpu_sim::cycle() {
           gpu_occupancy.aggregate_theoretical_warp_slots);
     }
 #endif
+    const uint64_t clc_now = gpu_tot_sim_cycle + gpu_sim_cycle;
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i)
+      for (unsigned j = 0; j < m_cluster[i]->num_cores(); ++j)
+        m_cluster[i]->get_core(j)->arbitrate_clc(clc_now);
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i)
+      for (unsigned j = 0; j < m_cluster[i]->num_cores(); ++j)
+        m_cluster[i]->get_core(j)->deliver_clc(clc_now);
     profiler.end_step(profiler.total_core_cycle_time);
     
     profiler.start_step();
@@ -4123,6 +4306,13 @@ void sst_gpgpu_sim::SST_cycle() {
     m_cluster[i]->get_cache_stats(
         m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
   }
+  const uint64_t clc_now = gpu_tot_sim_cycle + gpu_sim_cycle;
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i)
+    for (unsigned j = 0; j < m_cluster[i]->num_cores(); ++j)
+      m_cluster[i]->get_core(j)->arbitrate_clc(clc_now);
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i)
+    for (unsigned j = 0; j < m_cluster[i]->num_cores(); ++j)
+      m_cluster[i]->get_core(j)->deliver_clc(clc_now);
   float temp = 0;
   for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {
     temp += m_shader_stats->m_pipeline_duty_cycle[i];

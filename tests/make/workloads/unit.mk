@@ -32,8 +32,11 @@ SASS_UNIT_SASSIRS := \
 	$(SASS_UNIT_LLAMA_RESIDUAL_SASSIR)
 
 $(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm90/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o: ../libcuda/gpgpu_context.h
 
 $(OBJ_DIR)/sm100/unit/trace_config_test.cc.o: \
@@ -48,6 +51,7 @@ TEST_GROUP_EXTRA_OBJECTS_sm100_unit := \
 	$(OBJ_DIR)/sm100/support/local_interconnect.cc.o \
 	$(OBJ_DIR)/sm100/support/mshr-table.cc.o \
 	$(OBJ_DIR)/sm100/support/option_parser.cc.o \
+	$(OBJ_DIR)/sm100/support/tcgen05/copy.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/descriptor.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/mma.cu.o \
 	$(OBJ_DIR)/sm100/support/tcgen05/timing.cu.o \
@@ -120,6 +124,9 @@ $(SASS_UNIT_LLAMA_RESIDUAL_CUBIN),\
 _llama3_layer_matmul_residual_tile))
 
 TEST_GROUP_EXTRA_PREREQUISITES_sm100_unit := $(UNIT_MK)
+
+$(OBJ_DIR)/sm100/unit/tcgen05_collector_test.cc.o: \
+  $(SRC_DIR)/gpgpu-sim/flash/tcgen05/ws_mask.h
 
 # These host tests include simulator headers outside TEST_HEADERS. Keep their
 # object layouts in lockstep with the production types they exercise so an
@@ -253,15 +260,21 @@ $(OBJ_DIR)/sm90/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm120/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm90/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
-$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o: \
+$(OBJ_DIR)/sm100/unit/ptx_control_predecode_test.cc.o \
+$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/ptx_control_predecode_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
 $(OBJ_DIR)/sm90/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm100/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm120/unit/ptx_scheduler_test.cc.o \
 $(OBJ_DIR)/sm90/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm90/unit/ptx_control_predecode_test.cc.o \
 $(OBJ_DIR)/sm100/unit/register_view_reload_test.cc.o \
-$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o: \
+$(OBJ_DIR)/sm100/unit/ptx_control_predecode_test.cc.o \
+$(OBJ_DIR)/sm120/unit/register_view_reload_test.cc.o \
+$(OBJ_DIR)/sm120/unit/ptx_control_predecode_test.cc.o: \
   $(UNIT_MK) $(wildcard ../libcuda/*.h) $(wildcard ../src/cuda-sim/*.h) \
   $(wildcard ../src/gpgpu-sim/*.h) ../src/abstract_hardware_model.h \
   $(UNIT_SIM_BUILD_DIR)/cuda-sim/ptx.tab.h
@@ -323,12 +336,14 @@ $(OBJ_DIR)/sm100/unit/cache_invalidation_test.cc.o: \
   $(wildcard ../libcuda/*.h) $(wildcard ../src/gpgpu-sim/*.h) \
   ../src/abstract_hardware_model.h $(UNIT_MK)
 
+$(OBJ_DIR)/sm120/core/b200_system_timing_test.cc.o \
 $(OBJ_DIR)/sm120/core/cache_partial_store_test.cc.o \
 $(OBJ_DIR)/sm120/core/cluster_response_width_test.cc.o \
 $(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
 $(OBJ_DIR)/sm120/core/pipeline_dump_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
 
+$(OBJ_DIR)/sm120/core/b200_system_timing_test.cc.o \
 $(OBJ_DIR)/sm120/core/cache_partial_store_test.cc.o \
 $(OBJ_DIR)/sm120/core/cluster_response_width_test.cc.o \
 $(OBJ_DIR)/sm120/core/predicated_atomic_test.cc.o \
@@ -370,6 +385,7 @@ arch/sm120.toml $(ARCH_SASSIR_SCRIPT)
 $(OBJ_DIR)/sm120/support/sass_timing_projection.cc.o: \
 $(SRC_DIR)/gpgpu-sim/flash/sass/timing/timing_projection.cc \
 $(SRC_DIR)/gpgpu-sim/flash/sass/timing/timing_projection.h \
+$(SRC_DIR)/gpgpu-sim/flash/sass/decode/tmem_instruction.h \
 $(SRC_DIR)/gpgpu-sim/flash/sass/frontend.h \
 $(SRC_DIR)/gpgpu-sim/flash/sass/decode/wgmma_instruction.h \
 $(SRC_DIR)/gpgpu-sim/flash/sass/ir.h \
@@ -430,13 +446,16 @@ arch/sm120.toml $(ARCH_SASSIR_SCRIPT)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(GPGPUSIM_FLAGS) -c $< -o $@
 
+$(OBJ_DIR)/sm100/unit/sass/runtime/parameter_alias_test.cc.o \
 $(OBJ_DIR)/sm100/unit/kernel_info_frontend_test.cc.o \
 $(OBJ_DIR)/sm120/unit/kernel_info_frontend_test.cc.o: \
   INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
+$(OBJ_DIR)/sm100/unit/sass/runtime/parameter_alias_test.cc.o \
 $(OBJ_DIR)/sm100/unit/kernel_info_frontend_test.cc.o \
 $(OBJ_DIR)/sm120/unit/kernel_info_frontend_test.cc.o: \
   ../src/kernel_info.h ../libcuda/gpgpu_context.h $(UNIT_MK)
 
+$(OBJ_DIR)/sm100/unit/sass/runtime/parameter_alias_test.cc.o \
 $(OBJ_DIR)/sm100/unit/kernel_info_frontend_test.cc.o \
 $(OBJ_DIR)/sm120/unit/kernel_info_frontend_test.cc.o: \
   GPGPUSIM_FLAGS += -DFLASH_GPGPU_SIM_OMP
@@ -478,3 +497,60 @@ $(foreach arch,sm90 sm100 sm120,$(OBJ_DIR)/$(arch)/unit/kernel_retirement_test.c
   GPGPUSIM_FLAGS += -DFLASH_GPGPU_SIM -DFLASH_GPGPU_SIM_OMP
 $(foreach arch,sm90 sm100 sm120,$(OBJ_DIR)/$(arch)/unit/kernel_retirement_test.cc.o): \
   ../src/kernel_info.h ../libcuda/gpgpu_context.h $(UNIT_MK)
+
+# Shared bulk and cache-hint predecode must match the simulator ABI.
+$(OBJ_DIR)/sm100/unit/global_reduce_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_integer_literal_test.cc.o \
+$(OBJ_DIR)/sm100/unit/sass/functional/mixed_arithmetic_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o \
+$(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o: \
+  INCLUDES += -I.. -I../libcuda -I$(UNIT_SIM_BUILD_DIR)/cuda-sim
+$(OBJ_DIR)/sm100/unit/global_reduce_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_integer_literal_test.cc.o \
+$(OBJ_DIR)/sm100/unit/sass/functional/mixed_arithmetic_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o \
+$(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o: \
+  CXXFLAGS += -DFLASH_GPGPU_SIM_OMP
+$(OBJ_DIR)/sm100/unit/global_reduce_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_integer_literal_test.cc.o \
+$(OBJ_DIR)/sm100/unit/sass/functional/mixed_arithmetic_test.cc.o \
+$(OBJ_DIR)/sm100/unit/ptx_memory_forms_test.cc.o \
+$(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o: \
+  ../libcuda/gpgpu_context.h $(UNIT_SIM_BUILD_DIR)/cuda-sim/ptx.tab.h \
+  ../src/cuda-sim/ptx_ir.h $(UNIT_MK)
+$(OBJ_DIR)/sm100/unit/shared_bulk_test.cc.o: \
+  ../src/gpgpu-sim/flash/shared_bulk.h
+
+$(OBJ_DIR)/sm100/unit/narrow_conversion_test.cc.o: \
+  ../src/gpgpu-sim/flash/narrow_conversion.h ../src/gpgpu-sim/flash/bfloat_conversion.h
+
+$(OBJ_DIR)/sm100/unit/warp_reduce_test.cc.o \
+$(OBJ_DIR)/sm100/support/sass_functional_data_movement.cc.o \
+$(OBJ_DIR)/sm120/support/sass_functional_data_movement.cc.o: \
+  ../src/gpgpu-sim/flash/warp_reduce.h
+
+$(OBJ_DIR)/sm100/support/sass_functional_integer.cc.o \
+$(OBJ_DIR)/sm120/support/sass_functional_integer.cc.o: \
+  ../src/gpgpu-sim/flash/funnel_shift.h
+
+$(OBJ_DIR)/sm100/warp_reduce/launch_test.cu.o: src/funnel_shift/launch_test.cu
+
+$(OBJ_DIR)/sm100/unit/memory_transport_test.cc.o: ../src/gpgpu-sim/flash/load_response_counter.h
+
+$(OBJ_DIR)/sm100/unit/bfloat_arithmetic_test.cc.o \
+$(OBJ_DIR)/sm100/support/sass_functional_float.cc.o: \
+  ../src/gpgpu-sim/flash/bfloat_arithmetic.h \
+  ../src/gpgpu-sim/flash/bfloat_conversion.h
+
+$(OBJ_DIR)/sm100/unit/cluster_store_test.cc.o \
+$(OBJ_DIR)/sm100/support/sass_functional_cluster_store.cc.o: \
+  ../src/gpgpu-sim/flash/cluster_store.h \
+  ../src/gpgpu-sim/flash/shared_address.h
+
+$(OBJ_DIR)/sm100/unit/bit_scan_test.cc.o: $(SRC_DIR)/gpgpu-sim/flash/bit_scan.h
+$(OBJ_DIR)/sm100/support/sass_functional_integer.cc.o \
+$(OBJ_DIR)/sm120/support/sass_functional_integer.cc.o: $(SRC_DIR)/gpgpu-sim/flash/bit_scan.h
+
+# Frontend timing annotations change instruction objects embedded in host tests.
+$(SASS_UNIT_TEST_OBJECTS) $(TEST_GROUP_EXTRA_OBJECTS_sm120_unit) \
+$(TEST_GROUP_EXTRA_OBJECTS_sm100_unit): $(SRC_DIR)/abstract_hardware_model.h
