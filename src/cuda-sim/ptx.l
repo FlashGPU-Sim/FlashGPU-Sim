@@ -43,19 +43,39 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "ptx_parser.h"
 #include "ptx.tab.h"
 #include <cstdlib>
+#include <cerrno>
+#include <limits>
 #include <string.h>
 #include "../../libcuda/gpgpu_context.h"
 
 #define LINEBUF_SIZE (4*1024)
 #define TC recognizer->col+=strlen(yytext);
-#define CHECK_UNSIGNED \
-	if( yytext[strlen(yytext)-1]=='U' ) { \
-		printf("GPGPU-Sim: ERROR ** U modifier not implemented\n"); \
-		abort(); \
-	}
 #define YY_DECL int ptx_lex \
 	       (YYSTYPE * yylval_param , yyscan_t yyscanner, ptx_recognizer* recognizer)
 int ptx_error( yyscan_t yyscanner, ptx_recognizer* recognizer, const char *s );
+
+// YYSTYPE keeps a signed carrier, but PTX immediates may use all 64 bits.
+// Negation is modulo 2^64, never a host signed-overflow operation. Constant
+// expressions are not evaluated here; instruction type determines conversion.
+static long long parse_integer_literal(const char *text, int base) {
+  const bool negative = text[0] == '-';
+  const char *digits = text + (negative ? 1 : 0);
+  if (base == 2) digits += 2;  // strtoull need not understand the 0b prefix.
+  errno = 0;
+  char *end = nullptr;
+  unsigned long long bits = strtoull(digits, &end, base);
+  if (errno == ERANGE || end == digits ||
+      (*end != '\0' && !(end[0] == 'U' && end[1] == '\0'))) {
+    fprintf(stderr, "GPGPU-Sim: integer literal out of range: %s\n", text);
+    abort();
+  }
+  if (negative) bits = 0ULL - bits;
+  static_assert(std::numeric_limits<unsigned long long>::digits == 64,
+                "PTX requires 64-bit integer literals");
+  long long result;
+  memcpy(&result, &bits, sizeof(result));
+  return result;
+}
 
 static int parse_wgmma_shape_option(const char *text) {
   int n = 0;
@@ -355,10 +375,10 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 
 [0-9]+\.[0-9]+ 	 TC; sscanf(yytext,"%lf", &yylval->double_value); return DOUBLE_OPERAND;
 	
-0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; yylval->int_value = (long long)strtoull(yytext, NULL, 0); return INT_OPERAND;
-0[0-7]+U?   	TC; printf("GPGPU-Sim: ERROR ** parsing octal not (yet) implemented\n"); abort(); return INT_OPERAND;
-0[bB][01]+U?  	TC; printf("GPGPU-Sim: ERROR ** parsing binary not (yet) implemented\n"); abort(); return INT_OPERAND;
-[-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value = strtoll(yytext, NULL, 10); return INT_OPERAND;
+[-]?0[xX][0-9a-fA-F]+U? TC; yylval->int_value = parse_integer_literal(yytext, 16); return INT_OPERAND;
+[-]?0[0-9]+U?           TC; yylval->int_value = parse_integer_literal(yytext, 8); return INT_OPERAND;
+[-]?0[bB][01]+U?        TC; yylval->int_value = parse_integer_literal(yytext, 2); return INT_OPERAND;
+[-]?[0-9]+U?        TC; yylval->int_value = parse_integer_literal(yytext, 10); return INT_OPERAND;
 
 0[fF][0-9a-fA-F]{8}  TC; sscanf(yytext+2,"%x", (unsigned*)(void*)&yylval->float_value); return FLOAT_OPERAND;
 0[dD][0-9a-fA-F]{16}  TC; sscanf(yytext+2,"%Lx", (unsigned long long*)(void*)&yylval->double_value); return DOUBLE_OPERAND;

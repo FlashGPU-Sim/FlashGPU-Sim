@@ -5,6 +5,8 @@ config = "SM90_H100"
 [workloads]
 sources = [
   "unit/ptx_timing_isolation_test.cc",
+  "unit/ptx_control_predecode_test.cc",
+  "unit/ptx_integer_literal_test.cc",
   # Host-side simulator regression.
   "unit/register_view_reload_test.cc",
   "unit/kernel_retirement_test.cc",
@@ -13,6 +15,7 @@ sources = [
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/vector_modifier_order_test.cu",
   "integration/ptx_fma_test.cu",
   "integration/integer_multiply_test.cu",
   "integration/float_minmax_three_input_test.cu",
@@ -32,6 +35,7 @@ sources = [
   "integration/mbarrier_cluster_test.cu",
   "integration/tma_cluster_multicast_test.cu",
   "integration/tma_cluster_unicast_test.cu",
+  "integration/tensor_coordinate_literal_test.cu",
   "integration/tma_multicast_mask_test.cu",
   "integration/tma_store_test.cu",
 

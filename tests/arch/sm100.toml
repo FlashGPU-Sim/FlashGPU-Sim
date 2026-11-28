@@ -5,9 +5,13 @@ config = "SM100_B200"
 [workloads]
 sources = [
   "unit/ptx_timing_isolation_test.cc",
+  "unit/ptx_tensor_coords_test.cc",
+  "unit/ptx_control_predecode_test.cc",
+  "unit/ptx_integer_literal_test.cc",
   # Portable integration tests.
   "integration/address_operand_test.cu",
   "integration/vector_operand_test.cu",
+  "integration/vector_modifier_order_test.cu",
   "integration/integer_multiply_test.cu",
   "integration/float_minmax_three_input_test.cu",
   "integration/vector_add_test.cu",
@@ -28,6 +32,7 @@ sources = [
   "integration/tma_cluster_multicast_test.cu",
   "integration/ptx_fma_test.cu",
   "integration/tma_cluster_unicast_test.cu",
+  "integration/tensor_coordinate_literal_test.cu",
   "integration/tma_multicast_mask_test.cu",
   "integration/tma_store_test.cu",
 
